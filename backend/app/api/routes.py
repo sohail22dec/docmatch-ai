@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import List, Optional
 from langchain_core.messages import HumanMessage, AIMessage
-from app.models.crud import create_session, get_sessions, get_messages, add_message
+from app.models.crud import create_session, get_sessions, get_messages, add_message, delete_session
 
 router = APIRouter()
 
@@ -37,6 +37,15 @@ def get_session_messages(session_id: str):
         return {"messages": messages}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch messages: {str(e)}")
+
+@router.delete("/sessions/{session_id}")
+def delete_session_endpoint(session_id: str):
+    """Deletes a session and its messages."""
+    try:
+        delete_session(session_id)
+        return {"status": "success", "message": "Session deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete session: {str(e)}")
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(request: Request, chat_request: ChatRequest):
