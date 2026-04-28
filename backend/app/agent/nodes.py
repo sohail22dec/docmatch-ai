@@ -67,10 +67,12 @@ async def orchestrator_node(state: AgentState) -> dict:
         return {"next": "END"}
 
     llm = _get_llm()
-    intent_resp = await llm.ainvoke([
-        SystemMessage(content=INTENT_PROMPT),
-        HumanMessage(content=latest_user_msg),
-    ])
+    intent_resp = await llm.ainvoke(
+        [
+            SystemMessage(content=INTENT_PROMPT),
+            HumanMessage(content=latest_user_msg),
+        ]
+    )
     intent = intent_resp.content.strip().lower()
 
     if "clinic_search" in intent:
@@ -109,7 +111,7 @@ async def symptom_agent(state: AgentState) -> dict:
 
     llm = _get_llm(temperature=0.2)
     prompt_messages = [SystemMessage(content=SYMPTOM_PROMPT)]
-    
+
     # Pass recent conversation context so it remembers its own clarifying questions
     recent_messages = messages[-6:] if len(messages) > 6 else messages
     prompt_messages.extend(recent_messages)
@@ -123,14 +125,20 @@ async def symptom_agent(state: AgentState) -> dict:
             content = content.split("```json")[1]
         if content.endswith("```"):
             content = content.rsplit("```", 1)[0]
-        
+
         data = json.loads(content.strip())
         status = data.get("status")
 
         if status == "clarifying":
             return {
-                "messages": [AIMessage(content=data.get("message", "Could you provide more details?"))],
-                "final_response": data.get("message", "Could you provide more details?"),
+                "messages": [
+                    AIMessage(
+                        content=data.get("message", "Could you provide more details?")
+                    )
+                ],
+                "final_response": data.get(
+                    "message", "Could you provide more details?"
+                ),
             }
         else:
             return {
@@ -149,6 +157,7 @@ async def symptom_agent(state: AgentState) -> dict:
 # LOCATION AGENT
 # ---------------------------------------------------------------------------
 
+
 async def location_agent(state: AgentState) -> dict:
     """
     Checks if GPS was provided. If not, generates a polite message asking
@@ -159,7 +168,7 @@ async def location_agent(state: AgentState) -> dict:
 
     ask_message = (
         f"I can help you find a **{specialty}** near you! 🩺\n\n"
-        f"To find the closest clinics, I need your location. Please **allow location access** when your browser asks, or simply **type your city name** (e.g., \"Malda\" or \"Mumbai\")."
+        f'To find the closest clinics, I need your location. Please **allow location access** when your browser asks, or simply **type your city name** (e.g., "Malda" or "Mumbai").'
     )
 
     return {
@@ -173,6 +182,7 @@ async def location_agent(state: AgentState) -> dict:
 # ---------------------------------------------------------------------------
 # SEARCH AGENT
 # ---------------------------------------------------------------------------
+
 
 async def search_agent(state: AgentState) -> dict:
     """
@@ -190,6 +200,7 @@ async def search_agent(state: AgentState) -> dict:
     # ---- Step 1: Google Maps Places API ----
     try:
         import httpx
+
         if latitude and longitude:
             # Nearby search by GPS coordinates
             url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
@@ -213,13 +224,16 @@ async def search_agent(state: AgentState) -> dict:
 
         if data.get("status") == "OK":
             for place in data.get("results", [])[:8]:
-                clinics.append({
-                    "name": place.get("name"),
-                    "address": place.get("formatted_address") or place.get("vicinity"),
-                    "rating": place.get("rating"),
-                    "open_now": place.get("opening_hours", {}).get("open_now"),
-                    "source": "Google Maps",
-                })
+                clinics.append(
+                    {
+                        "name": place.get("name"),
+                        "address": place.get("formatted_address")
+                        or place.get("vicinity"),
+                        "rating": place.get("rating"),
+                        "open_now": place.get("opening_hours", {}).get("open_now"),
+                        "source": "Google Maps",
+                    }
+                )
         else:
             print(f"[search_agent] Google Maps status: {data.get('status')}")
 
@@ -230,18 +244,25 @@ async def search_agent(state: AgentState) -> dict:
     if not clinics:
         try:
             from tavily import TavilyClient
+
             location_str = city or f"near coordinates {latitude},{longitude}"
-            query = f"{specialty} clinics in {location_str} with address and phone number"
+            query = (
+                f"{specialty} clinics in {location_str} with address and phone number"
+            )
             tavily = TavilyClient(api_key=settings.TAVILY_API_KEY)
-            results = tavily.search(query=query, search_depth="advanced").get("results", [])
+            results = tavily.search(query=query, search_depth="advanced").get(
+                "results", []
+            )
             for r in results[:5]:
-                clinics.append({
-                    "name": r.get("title"),
-                    "address": r.get("url"),
-                    "rating": None,
-                    "open_now": None,
-                    "source": "Tavily",
-                })
+                clinics.append(
+                    {
+                        "name": r.get("title"),
+                        "address": r.get("url"),
+                        "rating": None,
+                        "open_now": None,
+                        "source": "Tavily",
+                    }
+                )
         except Exception as e:
             print(f"[search_agent] Tavily error: {e}")
 
@@ -276,17 +297,22 @@ async def formatter_agent(state: AgentState) -> dict:
     specialty = state.get("specialty_needed", "doctor")
     city = state.get("city") or "your location"
 
-    context = json.dumps({
-        "specialty": specialty,
-        "location": city,
-        "clinics": clinics,
-    }, indent=2)
+    context = json.dumps(
+        {
+            "specialty": specialty,
+            "location": city,
+            "clinics": clinics,
+        },
+        indent=2,
+    )
 
     llm = _get_llm(temperature=0.3)
-    response = await llm.ainvoke([
-        SystemMessage(content=FORMATTER_PROMPT),
-        HumanMessage(content=context),
-    ])
+    response = await llm.ainvoke(
+        [
+            SystemMessage(content=FORMATTER_PROMPT),
+            HumanMessage(content=context),
+        ]
+    )
 
     return {
         "messages": [AIMessage(content=response.content)],
@@ -326,6 +352,7 @@ async def general_qa_agent(state: AgentState) -> dict:
     search_context = ""
     try:
         from tavily import TavilyClient
+
         client = TavilyClient(api_key=settings.TAVILY_API_KEY)
         results = client.search(
             query=latest_user_msg,
@@ -345,7 +372,11 @@ async def general_qa_agent(state: AgentState) -> dict:
     prompt_messages.extend(recent_messages)
 
     if search_context:
-        prompt_messages.append(HumanMessage(content=f"{search_context}\n\nUser question: {latest_user_msg}"))
+        prompt_messages.append(
+            HumanMessage(
+                content=f"{search_context}\n\nUser question: {latest_user_msg}"
+            )
+        )
     else:
         prompt_messages.append(HumanMessage(content=latest_user_msg))
 
@@ -355,4 +386,3 @@ async def general_qa_agent(state: AgentState) -> dict:
         "messages": [AIMessage(content=response.content)],
         "final_response": response.content,
     }
-

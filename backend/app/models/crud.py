@@ -23,17 +23,27 @@ def get_sessions():
     return response.data
 
 
-def get_messages(session_id: str):
-    """Gets all messages for a specific session ordered chronologically."""
+def get_messages(session_id: str, limit: int = 15):
+    """
+    Gets the latest messages for a specific session.
+    Returns them in chronological order for the AI.
+    """
     client = get_supabase_client()
+    # 1. Get the LATEST messages by ordering DESC and limiting
     response = (
         client.table("chat_messages")
         .select("*")
         .eq("session_id", session_id)
-        .order("created_at")
+        .order("created_at", desc=True)
+        .limit(limit)
         .execute()
     )
-    return response.data
+    
+    # 2. Reverse them so they are back in CHRONOLOGICAL order for the AI
+    messages = response.data
+    messages.reverse()
+    
+    return messages
 
 
 def add_message(session_id: str, role: str, content: str):

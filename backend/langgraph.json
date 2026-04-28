@@ -1,0 +1,11 @@
+{
+  "graphs": {
+    "medical_assistant": "./app/agent/graph.py:build_medical_graph"
+  },
+  "env": ".env",
+  "python_version": "3.12",
+  "source": {
+    "kind": "uv",
+    "root": "."
+  }
+}

@@ -1,5 +1,3 @@
-# backend/main.py
-
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,6 +5,10 @@ from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.agent.graph import build_medical_graph
 from app.api.routes import router as chat_router
+from dotenv import load_dotenv
+
+# Load .env into os.environ for LangSmith tracing
+load_dotenv()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
