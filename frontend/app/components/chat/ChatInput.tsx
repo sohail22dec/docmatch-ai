@@ -18,7 +18,7 @@ export default function ChatInput({
 }: ChatInputProps) {
   return (
     <div
-      className="shrink-0 px-4 pb-4 pt-2"
+      className="shrink-0 px-3 md:px-4 pb-3 md:pb-4 pt-2"
       style={{ background: "var(--bg-primary)" }}
     >
       <form onSubmit={onSubmit} className="max-w-3xl mx-auto relative flex items-center gap-2">

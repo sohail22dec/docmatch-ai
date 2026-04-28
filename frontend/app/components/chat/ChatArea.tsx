@@ -83,13 +83,13 @@ export default function ChatArea({
   // Message list
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
+      <div className="max-w-3xl mx-auto px-3 md:px-4 py-4 md:py-6 space-y-5 md:space-y-6">
         {messages.map((msg, idx) => (
           <MessageRow key={idx} role={msg.role} content={msg.content} />
         ))}
 
         {isLoading && (
-          <div className="flex gap-4 py-2">
+          <div className="flex gap-3 md:gap-4 py-2">
             <div
               className="w-8 h-8 rounded-full flex items-center justify-center shrink-0"
               style={{ background: "var(--bg-secondary)" }}
@@ -142,7 +142,7 @@ function MessageRow({ role, content }: { role: string; content: string }) {
   const isUser = role === "user";
 
   return (
-    <div className="flex gap-4">
+    <div className="flex gap-3 md:gap-4">
       {/* Avatar */}
       <div
         className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 text-sm font-semibold"

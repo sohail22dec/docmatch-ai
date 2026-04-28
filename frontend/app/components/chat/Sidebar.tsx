@@ -20,6 +20,7 @@ interface SidebarProps {
   onNewChat: () => void;
   onSelectSession: (id: string) => void;
   onDeleteSession: (id: string, e: React.MouseEvent) => void;
+  isMobile?: boolean;
 }
 
 export default function Sidebar({
@@ -29,14 +30,19 @@ export default function Sidebar({
   onNewChat,
   onSelectSession,
   onDeleteSession,
+  isMobile = false,
 }: SidebarProps) {
   return (
     <div
-      className="shrink-0 flex flex-col overflow-hidden transition-all duration-200"
+      className={`shrink-0 flex flex-col overflow-hidden transition-all duration-300 ease-in-out ${
+        isMobile ? "fixed inset-y-0 left-0 z-50 shadow-2xl" : "relative"
+      }`}
       style={{
         width: isSidebarOpen ? "260px" : "0px",
         background: "var(--bg-sidebar)",
         borderRight: isSidebarOpen ? "1px solid var(--border-color)" : "none",
+        transform: isMobile && !isSidebarOpen ? "translateX(-100%)" : "translateX(0)",
+        opacity: !isMobile && !isSidebarOpen ? 0 : 1,
       }}
     >
       {/* Header + New Chat */}
@@ -126,7 +132,9 @@ export default function Sidebar({
                   </button>
                   <button
                     onClick={(e) => onDeleteSession(session.id, e)}
-                    className="p-1.5 mr-1 rounded opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+                    className={`p-1.5 mr-1 rounded transition-opacity cursor-pointer ${
+                      isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                    }`}
                     style={{ color: "var(--text-tertiary)" }}
                     onMouseEnter={(e) => {
                       e.currentTarget.style.color = "#ef4444";

@@ -27,20 +27,32 @@ export default function ChatLayout() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isMobile, setIsMobile] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
 
-  // On mount: detect theme from localStorage or system preference
+  // On mount: detect theme and screen size
   useEffect(() => {
+    const checkMobile = () => {
+      const mobile = window.innerWidth < 768;
+      setIsMobile(mobile);
+      if (mobile) setIsSidebarOpen(false);
+      else setIsSidebarOpen(true);
+    };
+    
+    checkMobile();
+    window.addEventListener("resize", checkMobile);
+
     const saved = localStorage.getItem("theme");
     if (saved === "dark") {
       setIsDarkMode(true);
     } else if (saved === "light") {
       setIsDarkMode(false);
     } else {
-      // No saved preference — use system setting
       setIsDarkMode(window.matchMedia("(prefers-color-scheme: dark)").matches);
     }
+
+    return () => window.removeEventListener("resize", checkMobile);
   }, []);
 
   // Fetch sessions on mount
@@ -84,6 +96,8 @@ export default function ChatLayout() {
           content: msg.content,
         }));
         setMessages(formatted);
+        // On mobile, close sidebar after selecting a chat
+        if (isMobile) setIsSidebarOpen(false);
       }
     } catch (error) {
       console.error("Failed to load session:", error);
@@ -175,6 +189,7 @@ export default function ChatLayout() {
     setCurrentSessionId(null);
     setMessages([]);
     setLocation(null);
+    if (isMobile) setIsSidebarOpen(false);
   };
 
   const handleDeleteSession = async (
@@ -213,7 +228,15 @@ export default function ChatLayout() {
   // ---- Render ----
 
   return (
-    <div className="h-full flex" style={{ background: "var(--bg-primary)" }}>
+    <div className="h-full flex overflow-hidden" style={{ background: "var(--bg-primary)" }}>
+      {/* Overlay for mobile when sidebar is open */}
+      {isMobile && isSidebarOpen && (
+        <div 
+          className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm transition-opacity"
+          onClick={() => setIsSidebarOpen(false)}
+        />
+      )}
+
       <Sidebar
         sessions={sessions}
         currentSessionId={currentSessionId}
@@ -221,9 +244,10 @@ export default function ChatLayout() {
         onNewChat={handleNewChat}
         onSelectSession={loadSession}
         onDeleteSession={handleDeleteSession}
+        isMobile={isMobile}
       />
 
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 h-full relative">
         <ChatHeader
           isDarkMode={isDarkMode}
           onToggleDarkMode={() => {
