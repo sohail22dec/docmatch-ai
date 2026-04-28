@@ -17,6 +17,9 @@ type Session = {
   created_at: string;
 };
 
+// Use environment variable for production, fallback to local for dev
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 export default function ChatLayout() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -58,7 +61,7 @@ export default function ChatLayout() {
 
   const fetchSessions = async () => {
     try {
-      const response = await fetch("/api/sessions");
+      const response = await fetch(`${API_BASE_URL}/api/sessions`);
       if (response.ok) {
         const data = await response.json();
         setSessions(data.sessions || []);
@@ -73,7 +76,7 @@ export default function ChatLayout() {
     setIsLoading(true);
     setMessages([]);
     try {
-      const response = await fetch(`/api/sessions/${sessionId}/messages`);
+      const response = await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/messages`);
       if (response.ok) {
         const data = await response.json();
         const formatted = data.messages.map((msg: any) => ({
@@ -107,7 +110,7 @@ export default function ChatLayout() {
     const lngToSend = coordsOverride !== undefined ? coordsOverride?.lng ?? null : location?.lng ?? null;
 
     try {
-      const response = await fetch("/api/chat", {
+      const response = await fetch(`${API_BASE_URL}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -191,7 +194,7 @@ export default function ChatLayout() {
     }
 
     try {
-      const response = await fetch(`/api/sessions/${sessionId}`, {
+      const response = await fetch(`${API_BASE_URL}/api/sessions/${sessionId}`, {
         method: "DELETE",
       });
       if (!response.ok) {
