@@ -1,45 +1,61 @@
 from langgraph.graph import StateGraph, START, END
-from langgraph.prebuilt import ToolNode, tools_condition
 from app.agent.state import AgentState
-from app.agent.nodes import make_triage_node
-from app.core.tools import get_mcp_tools
+from app.agent.nodes import (
+    orchestrator_node,
+    symptom_agent,
+    location_agent,
+    search_agent,
+    formatter_agent,
+    general_qa_agent,
+)
+
+
+def route_from_orchestrator(state: AgentState) -> str:
+    """Reads the 'next' key set by the orchestrator and returns it as a routing string."""
+    return state.get("next", "END")
 
 
 async def build_medical_graph():
     """
-    Builds and compiles the LangGraph.
-    It is an async function because we need to fetch the MCP tools
-    from the external servers before wiring the graph.
+    Builds and compiles the multi-agent LangGraph.
+
+    Graph topology:
+        START → orchestrator
+        orchestrator → [symptom_agent | location_agent | search_agent | formatter_agent | END]
+        every sub-agent → orchestrator  (loop back)
     """
-    # 1. Fetch the tools dynamically from our MCP Server
-    tools = await get_mcp_tools()
-
-    # 2. Create the LangGraph ToolNode
-    # This node automatically executes the tools if the LLM requests them.
-    tool_node = ToolNode(tools)
-
-    # 3. Initialize the Graph with our State
     workflow = StateGraph(AgentState)
 
-    # 4. Add the nodes
-    triage_node = make_triage_node(tools)
-    workflow.add_node("triage", triage_node)
-    workflow.add_node("tools", tool_node)
+    # Register all nodes
+    workflow.add_node("orchestrator", orchestrator_node)
+    workflow.add_node("symptom_agent", symptom_agent)
+    workflow.add_node("location_agent", location_agent)
+    workflow.add_node("search_agent", search_agent)
+    workflow.add_node("formatter_agent", formatter_agent)
+    workflow.add_node("general_qa_agent", general_qa_agent)
 
-    # 5. Wire the edges
-    # Start -> Triage
-    workflow.add_edge(START, "triage")
+    # Entry point
+    workflow.add_edge(START, "orchestrator")
 
-    # Triage -> conditionally go to 'tools' or END
-    # The `tools_condition` function automatically checks if the LLM returned a tool call.
-    # If yes -> "tools". If no -> END.
+    # Orchestrator routes conditionally based on state.next
     workflow.add_conditional_edges(
-        "triage", tools_condition, {"tools": "tools", END: END}
+        "orchestrator",
+        route_from_orchestrator,
+        {
+            "symptom_agent": "symptom_agent",
+            "location_agent": "location_agent",
+            "search_agent": "search_agent",
+            "formatter_agent": "formatter_agent",
+            "general_qa_agent": "general_qa_agent",
+            "END": END,
+        },
     )
 
-    # Tools -> Triage
-    # After tools execute, return to triage so it can summarize the tool output
-    workflow.add_edge("tools", "triage")
+    # All sub-agents loop back to the orchestrator
+    workflow.add_edge("symptom_agent", "orchestrator")
+    workflow.add_edge("location_agent", "orchestrator")
+    workflow.add_edge("search_agent", "orchestrator")
+    workflow.add_edge("formatter_agent", "orchestrator")
+    workflow.add_edge("general_qa_agent", "orchestrator")
 
-    # 6. Compile the graph!
     return workflow.compile()

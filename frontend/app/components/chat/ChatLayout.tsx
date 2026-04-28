@@ -25,6 +25,7 @@ export default function ChatLayout() {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isDarkMode, setIsDarkMode] = useState(false);
+  const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
 
   // On mount: detect theme from localStorage or system preference
   useEffect(() => {
@@ -88,16 +89,22 @@ export default function ChatLayout() {
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim() || isLoading) return;
+  const sendMessage = async (
+    messageContent: string,
+    coordsOverride?: { lat: number; lng: number } | null
+  ) => {
+    if (!messageContent.trim() || isLoading) return;
 
-    const userMessage: Message = { role: "user", content: input };
+    const userMessage: Message = { role: "user", content: messageContent };
     const newMessages = [...messages, userMessage];
 
     setMessages(newMessages);
     setInput("");
     setIsLoading(true);
+
+    // Use overrides if provided (for auto-submit on location button click), otherwise use state
+    const latToSend = coordsOverride !== undefined ? coordsOverride?.lat ?? null : location?.lat ?? null;
+    const lngToSend = coordsOverride !== undefined ? coordsOverride?.lng ?? null : location?.lng ?? null;
 
     try {
       const response = await fetch("/api/chat", {
@@ -106,6 +113,8 @@ export default function ChatLayout() {
         body: JSON.stringify({
           session_id: currentSessionId,
           messages: newMessages,
+          latitude: latToSend,
+          longitude: lngToSend,
         }),
       });
 
@@ -122,6 +131,23 @@ export default function ChatLayout() {
         setCurrentSessionId(data.session_id);
         fetchSessions();
       }
+
+      // AUTO-TRIGGER LOCATION: If backend asks for location, trigger browser prompt
+      if (data.action === "request_location" && !latToSend) {
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+              setLocation(coords);
+              // Silent auto-submit with the new coordinates
+              sendMessage("📍 Location shared automatically", coords);
+            },
+            (err) => {
+              console.warn("Location permission denied or error:", err);
+            }
+          );
+        }
+      }
     } catch (error) {
       console.error("Chat error:", error);
       setMessages([
@@ -137,9 +163,15 @@ export default function ChatLayout() {
     }
   };
 
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    sendMessage(input);
+  };
+
   const handleNewChat = () => {
     setCurrentSessionId(null);
     setMessages([]);
+    setLocation(null);
   };
 
   const handleDeleteSession = async (
