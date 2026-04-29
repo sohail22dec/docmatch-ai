@@ -1,6 +1,7 @@
 import json
 from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage, AIMessage, HumanMessage
+from langgraph.graph import END
 from app.core.config import settings
 from app.agent.state import AgentState
 
@@ -24,61 +25,89 @@ Look at the user's LATEST message and classify it into exactly one of these inte
 1. "clinic_search" - User is describing symptoms or asking to find a doctor/clinic/specialist
    Examples: "I have a rash", "find me a cardiologist", "my chest hurts"
 
-2. "general_qa" - User is asking a general question, follow-up about a specific doctor, or anything else
+2. "booking_request" - User wants to book an appointment with a specific doctor or clinic
+   Examples: "I want to book an appointment with Dr. Akash", "book a visit to dental care", "I pick the first one"
+
+3. "general_qa" - User is asking a general question or anything else
    Examples: "what is Dr. X's phone number?", "what are symptoms of diabetes?", "tell me more about clinic 3"
 
-Respond with ONLY one word: clinic_search OR general_qa
+Respond with ONLY one word: clinic_search, booking_request, OR general_qa
 """
 
 
 async def orchestrator_node(state: AgentState) -> dict:
+    print(f"[DEBUG] Entering orchestrator. Specialty: {state.get('specialty_needed')}")
     """
-    Central decision-maker. First classifies intent, then routes accordingly.
+    Central decision-maker. Uses state-based routing as defined in the plan.
     """
-    final = state.get("final_response")
     specialty = state.get("specialty_needed")
     latitude = state.get("latitude")
     city = state.get("city")
     clinics = state.get("clinics_found")
     searched = state.get("search_attempted", False)
+    selected_clinic = state.get("selected_clinic")
+    booking_confirmed = state.get("booking_confirmed", False)
+    final_response = state.get("final_response")
 
-    # If any agent has already produced a final response → done
-    if final:
-        return {"next": "END"}
+    # CRITICAL: If an agent already produced a response for the user, STOP.
+    # This prevents infinite loops when an agent (like symptom_agent) asks a question.
+    if final_response:
+        return {"next": END}
 
-    # Mid-pipeline routing (specialty already identified → continue the clinic flow)
-    if specialty:
-        if latitude is None and not city:
-            return {"next": "location_agent"}
-        if clinics is None and not searched:
-            return {"next": "search_agent"}
-        if clinics is not None or searched:
-            return {"next": "formatter_agent"}
+    # NEW: PRIORITIZE BOOKING FLOW
+    # If a clinic is selected, we MUST stay in booking mode.
+    if selected_clinic and not booking_confirmed:
+        print(f"[DEBUG] Booking mode locked for clinic: {selected_clinic.get('name')}")
+        return {"next": "booking_agent"}
 
-    # Fresh message — classify intent first
-    messages = state.get("messages", [])
-    latest_user_msg = ""
-    for msg in reversed(messages):
-        if isinstance(msg, HumanMessage):
-            latest_user_msg = msg.content
-            break
-
-    if not latest_user_msg:
-        return {"next": "END"}
-
-    llm = _get_llm()
-    intent_resp = await llm.ainvoke(
-        [
-            SystemMessage(content=INTENT_PROMPT),
-            HumanMessage(content=latest_user_msg),
-        ]
-    )
-    intent = intent_resp.content.strip().lower()
-
-    if "clinic_search" in intent:
+    # 1. Fresh message - If no specialty yet, check if it's a general question
+    if specialty is None:
+        messages = state.get("messages", [])
+        latest_user_msg = ""
+        for msg in reversed(messages):
+            if hasattr(msg, "type") and msg.type == "human":
+                latest_user_msg = msg.content
+                break
+        if latest_user_msg:
+            llm = _get_llm()
+            intent_resp = await llm.ainvoke([
+                SystemMessage(content=INTENT_PROMPT),
+                HumanMessage(content=latest_user_msg),
+            ])
+            intent = intent_resp.content.strip().lower()
+            print(f"[DEBUG] Intent: {intent}")
+            if "general_qa" in intent:
+                print("[DEBUG] Routing to general_qa_agent")
+                return {"next": "general_qa_agent"}
+            if "booking_request" in intent:
+                print("[DEBUG] Routing to booking_agent")
+                return {"next": "booking_agent"}
+        
+        print("[DEBUG] Routing to symptom_agent")
         return {"next": "symptom_agent"}
-    else:
-        return {"next": "general_qa_agent"}
+
+    # 2. latitude and city are both None → location_agent
+    if latitude is None and not city:
+        print("[DEBUG] Routing to location_agent")
+        return {"next": "location_agent"}
+
+    # 3. clinics_found is None and search_attempted is False → search_agent
+    if clinics is None and not searched:
+        print("[DEBUG] Routing to search_agent")
+        return {"next": "search_agent"}
+
+    # 4. clinics_found is set and selected_clinic is None → formatter_agent
+    if clinics is not None and selected_clinic is None:
+        print("[DEBUG] Routing to formatter_agent")
+        return {"next": "formatter_agent"}
+
+    # 5. booking_confirmed is True → confirmation_agent
+    if booking_confirmed:
+        print("[DEBUG] Routing to confirmation_agent")
+        return {"next": "confirmation_agent"}
+
+    print("[DEBUG] Routing to END (default)")
+    return {"next": END}
 
 
 # ---------------------------------------------------------------------------
@@ -95,14 +124,16 @@ Rules:
     - If NO symptoms have been mentioned yet: Ask "I've received your location! What symptoms are you experiencing today so I can help you find the right doctor?"
 - If symptoms are vague (e.g. "headache", "stomach hurts"), ask a clarifying question.
   Format: {"status": "clarifying", "message": "When did the headache start and how severe is it?"}
-- If symptoms are clear, assign a specialist.
-  Format: {"status": "diagnosed", "specialty": "Neurologist", "symptoms_summary": "severe headache for 3 days"}
+- If symptoms are clear, assign a specialist and extract the city if mentioned.
+  Format: {"status": "diagnosed", "specialty": "Neurologist", "city": "Mumbai", "symptoms_summary": "severe headache for 3 days"}
+- If no city is mentioned, leave "city" as null.
 - Choose from common specialties: Dermatologist, Cardiologist, Neurologist, Orthopedist, Pediatrician, Psychiatrist, Gastroenterologist, ENT Specialist, Ophthalmologist, General Physician, Dentist, Gynecologist, Urologist, Pulmonologist.
 - Do NOT include any other text — only the JSON object.
 """
 
 
 async def symptom_agent(state: AgentState) -> dict:
+    print("[DEBUG] Entering symptom_agent")
     """
     Reads the user's symptoms and outputs the required medical specialty.
     Can ask clarifying questions if symptoms are too vague.
@@ -141,15 +172,25 @@ async def symptom_agent(state: AgentState) -> dict:
                 ),
             }
         else:
+            specialty = data.get("specialty", "General Physician")
+            city = data.get("city")
+            diag_msg = f"Based on your symptoms, I recommend seeing a **{specialty}**."
+            if city:
+                diag_msg += f" I'll search for clinics in **{city}** right away."
+            
             return {
-                "specialty_needed": data.get("specialty", "General Physician"),
+                "specialty_needed": specialty,
+                "city": city,
                 "symptoms": data.get("symptoms_summary", "General symptoms"),
+                "messages": [AIMessage(content=diag_msg)] 
+                # Note: No final_response here so orchestrator continues to search/location
             }
     except Exception as e:
-        print(f"[symptom_agent] JSON parsing error: {e}")
+        print(f"[symptom_agent] Error: {e}")
         return {
             "specialty_needed": "General Physician",
             "symptoms": "General symptoms",
+            "messages": [AIMessage(content="I'm analyzing your symptoms. Let me find the right specialist for you.")]
         }
 
 
@@ -276,16 +317,18 @@ async def search_agent(state: AgentState) -> dict:
 # FORMATTER AGENT
 # ---------------------------------------------------------------------------
 
-FORMATTER_PROMPT = """You are a helpful medical assistant presenting clinic search results to a user.
-Format the provided clinic data into a clean, friendly response.
+FORMATTER_PROMPT = """You are a professional medical assistant. Your goal is to present clinic search results in a clean, structured format.
 
-Rules:
-- Start with "I found X {specialty} near you:"
-- List each clinic with: name, address, rating (if available), open now status (if available)
-- Use emojis sparingly (📍 for address, ⭐ for rating, ✅/❌ for open status)
-- If the list is empty, say "I couldn't find any {specialty} near {location}. Would you like me to search in a nearby larger city?"
-- Keep it concise and easy to read
-- End with a reminder to call ahead to confirm availability
+Instructions:
+1. Start with a friendly intro: "I found [count] [specialty] near you in [location]:"
+2. For each clinic, output it EXACTLY like this:
+   ---CLINIC---
+   NAME: [Clinic Name]
+   RATING: [Rating]
+   ADDRESS: [Full Address]
+   ---END---
+   
+3. End with a helpful tip: "I recommend calling ahead to confirm their current availability."
 """
 
 
@@ -317,6 +360,178 @@ async def formatter_agent(state: AgentState) -> dict:
     return {
         "messages": [AIMessage(content=response.content)],
         "final_response": response.content,
+    }
+
+
+# ---------------------------------------------------------------------------
+# BOOKING AGENT
+# ---------------------------------------------------------------------------
+
+BOOKING_EXTRACT_PROMPT = """You are a medical booking assistant. Extract booking information from the user's message.
+
+Last Question Asked: {last_question}
+User Message: {user_msg}
+Current Booking Data: {current_data}
+
+Rules:
+1. Identify "patient_name", "appointment_date", and "time_slot" from the User Message.
+2. Use the "Last Question Asked" as context. For example, if asked for a time, "Morning" refers to "time_slot".
+3. Respond with ONLY a JSON object. No conversational text.
+4. If no new info is found, return {{}}.
+"""
+
+async def booking_agent(state: AgentState) -> dict:
+    """
+    Handles the booking conversation. Inspects current_booking to find missing fields.
+    Supports cancellation.
+    """
+    messages = state.get("messages", [])
+    latest_msg = messages[-1].content.lower() if messages else ""
+    
+    # Check for cancellation
+    if any(word in latest_msg for word in ["cancel", "stop", "never mind", "dont want"]):
+        return {
+            "selected_clinic": None,
+            "current_booking": None,
+            "messages": [AIMessage(content="No problem, I've canceled the booking request. How else can I help you?")],
+            "final_response": "Booking canceled."
+        }
+
+    current_booking = state.get("current_booking") or {}
+    clinic = state.get("selected_clinic")
+    clinics_found = state.get("clinics_found", [])
+
+    # 1. If clinic is NOT set, try to find which one user mentioned
+    if not clinic and clinics_found:
+        latest_msg = messages[-1].content.lower()
+        for c in clinics_found:
+            name = c.get("name", "").lower()
+            if name in latest_msg or (len(name.split()) > 1 and name.split()[0] in latest_msg):
+                clinic = c
+                break
+        
+        if not clinic:
+            # Could not identify which clinic. Ask user to be more specific or click a button.
+            msg = "I'm not sure which clinic you'd like to book. Could you please provide the full name or click the **'Book'** button next to your choice?"
+            return {"messages": [AIMessage(content=msg)], "final_response": msg}
+
+    # 2. Extract info from latest message
+    llm = _get_llm(temperature=0)
+    user_input = messages[-1].content if messages else ""
+    user_input_lower = user_input.lower().strip()
+    
+    # --- SMART KEYWORD FALLBACK ---
+    # For one-word answers, don't even wait for the LLM
+    if len(user_input.split()) <= 2:
+        if any(w in user_input_lower for w in ["morning", "afternoon", "evening"]):
+            current_booking["time_slot"] = user_input.capitalize()
+        if any(w in user_input_lower for w in ["tomorrow", "friday", "monday", "today"]):
+            current_booking["appointment_date"] = user_input.capitalize()
+
+    # Get last AI message for context
+    last_ai_msg = ""
+    for msg in reversed(messages[:-1]):
+        if hasattr(msg, "type") and msg.type == "ai":
+            last_ai_msg = msg.content
+            break
+
+    extract_resp = await llm.ainvoke([
+        SystemMessage(content=BOOKING_EXTRACT_PROMPT.format(
+            current_data=json.dumps(current_booking),
+            user_msg=user_input,
+            last_question=last_ai_msg
+        ))
+    ])
+    
+    try:
+        content = extract_resp.content.strip()
+        # Clean up markdown code blocks if present
+        if "```" in content:
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+            content = content.split("```")[0]
+        
+        new_data = json.loads(content.strip())
+        print(f"[booking_agent] Extracted: {new_data}")
+        current_booking.update(new_data)
+    except Exception as e:
+        print(f"[booking_agent] Data extraction error: {e} | Content: {extract_resp.content}")
+
+    # 3. Find first missing field
+    # SAFETY: If we STILL don't have a clinic, we can't book.
+    if not clinic:
+        msg = "I'm ready to help you book an appointment! Could you please tell me **which clinic** or **which doctor** you'd like to visit from the list above?"
+        return {"messages": [AIMessage(content=msg)], "final_response": msg}
+
+    # IMPORTANT: Explicitly check for truthy values to avoid empty string loops
+    patient_name = current_booking.get("patient_name")
+    if not patient_name or len(str(patient_name).strip()) < 2:
+        clinic_name = clinic.get('name', 'this clinic')
+        msg = f"Great choice! Booking with **{clinic_name}**.\nI'll need a few details. What's your **full name**?"
+        return {
+            "selected_clinic": clinic,
+            "current_booking": current_booking, 
+            "messages": [AIMessage(content=msg)], 
+            "final_response": msg
+        }
+    
+    appointment_date = current_booking.get("appointment_date")
+    if not appointment_date:
+        msg = f"Nice to meet you, {patient_name}!\nWhat **date** would you like to book? (e.g., **Tomorrow** or **Friday**)"
+        return {
+            "current_booking": current_booking, 
+            "messages": [AIMessage(content=msg)], 
+            "final_response": msg
+        }
+
+    time_slot = current_booking.get("time_slot")
+    if not time_slot:
+        msg = f"And what **time** works best for you?\n(Morning, Afternoon, or Evening)"
+        return {
+            "current_booking": current_booking, 
+            "messages": [AIMessage(content=msg)], 
+            "final_response": msg
+        }
+
+    # All fields present -> Complete Booking
+    import random
+    booking_id = f"APT-{random.randint(10000, 99999)}"
+    
+    return {
+        "current_booking": current_booking,
+        "booking_id": booking_id,
+        "booking_confirmed": True
+    }
+
+
+# ---------------------------------------------------------------------------
+# CONFIRMATION AGENT
+# ---------------------------------------------------------------------------
+
+async def confirmation_agent(state: AgentState) -> dict:
+    """
+    Renders a structured booking card (simulated via special tags).
+    """
+    clinic = state.get("selected_clinic") or {}
+    booking = state.get("current_booking") or {}
+    bid = state.get("booking_id") or "APT-PENDING"
+    
+    confirmation_msg = f"""
+---BOOKING_CONFIRMED---
+ID: {bid}
+CLINIC: {clinic.get('name')}
+ADDRESS: {clinic.get('address')}
+PATIENT: {booking.get('patient_name')}
+DATE: {booking.get('appointment_date')}
+TIME: {booking.get('time_slot')}
+---END---
+
+Your appointment has been successfully scheduled! Please call ahead to confirm your slot.
+"""
+    return {
+        "messages": [AIMessage(content=confirmation_msg)],
+        "final_response": confirmation_msg
     }
 
 

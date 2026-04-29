@@ -7,22 +7,21 @@ from app.agent.nodes import (
     search_agent,
     formatter_agent,
     general_qa_agent,
+    booking_agent,
+    confirmation_agent,
 )
 
 
 def route_from_orchestrator(state: AgentState) -> str:
     """Reads the 'next' key set by the orchestrator and returns it as a routing string."""
-    return state.get("next", "END")
+    next_node = state.get("next")
+    print(f"[DEBUG] route_from_orchestrator sees next: {next_node}")
+    return next_node or END
 
 
 async def build_medical_graph():
     """
     Builds and compiles the multi-agent LangGraph.
-
-    Graph topology:
-        START → orchestrator
-        orchestrator → [symptom_agent | location_agent | search_agent | formatter_agent | END]
-        every sub-agent → orchestrator  (loop back)
     """
     workflow = StateGraph(AgentState)
 
@@ -33,6 +32,8 @@ async def build_medical_graph():
     workflow.add_node("search_agent", search_agent)
     workflow.add_node("formatter_agent", formatter_agent)
     workflow.add_node("general_qa_agent", general_qa_agent)
+    workflow.add_node("booking_agent", booking_agent)
+    workflow.add_node("confirmation_agent", confirmation_agent)
 
     # Entry point
     workflow.add_edge(START, "orchestrator")
@@ -47,7 +48,9 @@ async def build_medical_graph():
             "search_agent": "search_agent",
             "formatter_agent": "formatter_agent",
             "general_qa_agent": "general_qa_agent",
-            "END": END,
+            "booking_agent": "booking_agent",
+            "confirmation_agent": "confirmation_agent",
+            END: END,
         },
     )
 
@@ -57,5 +60,7 @@ async def build_medical_graph():
     workflow.add_edge("search_agent", "orchestrator")
     workflow.add_edge("formatter_agent", "orchestrator")
     workflow.add_edge("general_qa_agent", "orchestrator")
+    workflow.add_edge("booking_agent", "orchestrator")
+    workflow.add_edge("confirmation_agent", "orchestrator")
 
     return workflow.compile()

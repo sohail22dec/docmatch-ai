@@ -30,8 +30,14 @@ class AgentState(TypedDict):
     # --- Formatter Agent outputs ---
     final_response: Optional[str]     # Formatted message ready to return to the user
 
-    # --- Orchestrator routing ---
-    next: Optional[str]               # Routing key set by orchestrator: "symptom_agent" | "location_agent" | etc.
+    # --- Booking Agent fields ---
+    selected_clinic: Optional[dict]   # The clinic the user chose to book
+    current_booking: Optional[dict]   # Stores {patient_name, appointment_date, time_slot}
+    booking_confirmed: Optional[bool] # True after database save
+    booking_id: Optional[str]        # Human-readable ID e.g. "APT-47291"
 
     # --- UI Actions ---
     action_required: Optional[str]    # Special signals sent back to the frontend (e.g. "request_location")
+    
+    # --- Internal Routing ---
+    next: Optional[str]               # Used by orchestrator to signal next agent

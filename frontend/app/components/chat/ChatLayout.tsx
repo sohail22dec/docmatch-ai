@@ -31,6 +31,12 @@ export default function ChatLayout() {
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
 
+  // --- Booking State ---
+  const [selectedClinic, setSelectedClinic] = useState<any>(null);
+  const [currentBooking, setCurrentBooking] = useState<any>(null);
+  const [bookingConfirmed, setBookingConfirmed] = useState(false);
+  const [bookingId, setBookingId] = useState<string | null>(null);
+
   // On mount: detect theme and screen size
   useEffect(() => {
     const checkMobile = () => {
@@ -108,7 +114,8 @@ export default function ChatLayout() {
 
   const sendMessage = async (
     messageContent: string,
-    coordsOverride?: { lat: number; lng: number } | null
+    coordsOverride?: { lat: number; lng: number } | null,
+    clinicToSelect?: any // New parameter for direct booking trigger
   ) => {
     if (!messageContent.trim() || isLoading) return;
 
@@ -118,6 +125,10 @@ export default function ChatLayout() {
     setMessages(newMessages);
     setInput("");
     setIsLoading(true);
+
+    // If we're selecting a clinic, update state locally before sending
+    const updatedSelectedClinic = clinicToSelect || selectedClinic;
+    if (clinicToSelect) setSelectedClinic(clinicToSelect);
 
     // Use overrides if provided (for auto-submit on location button click), otherwise use state
     const latToSend = coordsOverride !== undefined ? coordsOverride?.lat ?? null : location?.lat ?? null;
@@ -132,6 +143,10 @@ export default function ChatLayout() {
           messages: newMessages,
           latitude: latToSend,
           longitude: lngToSend,
+          selected_clinic: updatedSelectedClinic,
+          current_booking: currentBooking,
+          booking_confirmed: bookingConfirmed,
+          booking_id: bookingId
         }),
       });
 
@@ -144,6 +159,12 @@ export default function ChatLayout() {
         { role: "assistant", content: data.response },
       ]);
 
+      // Update booking state from backend response
+      setSelectedClinic(data.selected_clinic);
+      setCurrentBooking(data.current_booking);
+      setBookingConfirmed(data.booking_confirmed);
+      setBookingId(data.booking_id);
+
       if (!currentSessionId && data.session_id) {
         setCurrentSessionId(data.session_id);
         fetchSessions();
@@ -152,15 +173,17 @@ export default function ChatLayout() {
       // AUTO-TRIGGER LOCATION: If backend asks for location, trigger browser prompt
       if (data.action === "request_location" && !latToSend) {
         if (navigator.geolocation) {
+          setIsLoading(true); // Start loading BEFORE the prompt shows
           navigator.geolocation.getCurrentPosition(
             (pos) => {
               const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
               setLocation(coords);
-              // Silent auto-submit with the new coordinates
+              // sendMessage will handle resetting isLoading finally
               sendMessage("📍 Location shared automatically", coords);
             },
             (err) => {
               console.warn("Location permission denied or error:", err);
+              setIsLoading(false); // Stop loading if denied or error
             }
           );
         }
@@ -185,10 +208,19 @@ export default function ChatLayout() {
     sendMessage(input);
   };
 
+  const handleBookAppointment = (clinic: any) => {
+    const triggerMsg = `I want to book an appointment at ${clinic.name}`;
+    sendMessage(triggerMsg, undefined, clinic);
+  };
+
   const handleNewChat = () => {
     setCurrentSessionId(null);
     setMessages([]);
     setLocation(null);
+    setSelectedClinic(null);
+    setCurrentBooking(null);
+    setBookingConfirmed(false);
+    setBookingId(null);
     if (isMobile) setIsSidebarOpen(false);
   };
 
@@ -263,6 +295,7 @@ export default function ChatLayout() {
           messages={messages}
           isLoading={isLoading}
           onSuggestionClick={handleSuggestionClick}
+          onBookAppointment={handleBookAppointment}
         />
 
         <ChatInput

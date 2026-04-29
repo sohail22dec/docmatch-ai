@@ -16,6 +16,15 @@ export default function ChatInput({
   onSubmit,
   isLoading,
 }: ChatInputProps) {
+  const [mounted, setMounted] = React.useState(false);
+
+  React.useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  // Prevent hydration mismatch: force 'true' during initial render on both server and client
+  const isSubmitDisabled = mounted ? (!input.trim() || isLoading) : true;
+
   return (
     <div
       className="shrink-0 px-3 md:px-4 pb-3 md:pb-4 pt-2"
@@ -48,7 +57,7 @@ export default function ChatInput({
           />
           <button
             type="submit"
-            disabled={!input.trim() || isLoading}
+            disabled={isSubmitDisabled}
             className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-lg transition-all disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
             style={{
               background: input.trim() ? "var(--accent)" : "transparent",
