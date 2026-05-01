@@ -587,7 +587,7 @@ async def booking_agent(state: AgentState) -> dict:
 - **Patient Name**: {patient_name}
 - **Specialty**: {specialty}
 - **Reason**: {reason}
-- **Clinic**: {clinic.get("name")}
+- **Doctor**: {clinic.get("name")}
 - **Date**: {appointment_date}
 - **Time**: {time_slot}
 - **Email**: {email_id}
@@ -656,39 +656,66 @@ async def confirmation_agent(state: AgentState) -> dict:
         import app.core.config as config
         from langchain_groq import ChatGroq
         import os
+        import tempfile
 
-        # Verify token.json exists before attempting
-        if os.path.exists("token.json"):
+        # Determine paths to use
+        creds_path = "credentials.json"
+        token_path = "token.json"
+
+        # If running in a hosted environment, local files might be missing.
+        # Fall back to environment variables.
+        if not os.path.exists(token_path) and os.environ.get("GOOGLE_TOKEN_JSON"):
+            # Write env vars to temporary files so the MCP server can read them
+            temp_dir = tempfile.gettempdir()
+            creds_path = os.path.join(temp_dir, "mcp_credentials.json")
+            token_path = os.path.join(temp_dir, "mcp_token.json")
+
+            with open(creds_path, "w") as f:
+                f.write(os.environ.get("GOOGLE_CREDENTIALS_JSON", "{}"))
+            with open(token_path, "w") as f:
+                f.write(os.environ.get("GOOGLE_TOKEN_JSON", "{}"))
+
+        # Verify token file exists before attempting
+        if os.path.exists(token_path):
             server_params = StdioServerParameters(
                 command="uvx",
                 args=[
-                    "--from", "git+https://github.com/theposch/gmail-mcp.git", 
-                    "gmail", 
-                    "--creds-file-path", "credentials.json", 
-                    "--token-path", "token.json"
-                ]
+                    "--from",
+                    "git+https://github.com/theposch/gmail-mcp.git",
+                    "gmail",
+                    "--creds-file-path",
+                    creds_path,
+                    "--token-path",
+                    token_path,
+                ],
             )
-            
+
             async with stdio_client(server_params) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     tools = await load_mcp_tools(session)
-                    
+
                     llm = ChatGroq(
-                        api_key=config.settings.GROQ_API_KEY, 
-                        model="llama-3.3-70b-versatile"
+                        api_key=config.settings.GROQ_API_KEY,
+                        model="llama-3.3-70b-versatile",
                     ).bind_tools(tools)
-                    
-                    prompt = f"Send a professional appointment confirmation email to {booking.get('email_id')}. Patient: {booking.get('patient_name')}. Clinic: {clinic.get('name')}. Date: {booking.get('appointment_date')}. Time: {booking.get('time_slot')}."
+
+                    prompt = f"Send a professional appointment confirmation email to {booking.get('email_id')}. Patient: {booking.get('patient_name')}. Doctor: {clinic.get('name')}. Date: {booking.get('appointment_date')}. Time: {booking.get('time_slot')}."
                     res = await llm.ainvoke([HumanMessage(content=prompt)])
-                    
+
                     if res.tool_calls:
                         for tcall in res.tool_calls:
-                            tool = next((t for t in tools if t.name == tcall["name"]), None)
+                            tool = next(
+                                (t for t in tools if t.name == tcall["name"]), None
+                            )
                             if tool:
                                 await tool.ainvoke(tcall["args"])
 
-            email_status = "📧 Confirmation email sent to " + booking.get("email_id", "your email") + "!"
+            email_status = (
+                "📧 Confirmation email sent to "
+                + booking.get("email_id", "your email")
+                + "!"
+            )
         else:
             print("[confirmation_agent] token.json not found, skipping email.")
     except Exception as e:

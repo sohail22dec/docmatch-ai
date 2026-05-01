@@ -131,7 +131,8 @@ export default function ChatLayout() {
     coordsOverride?: { lat: number; lng: number } | null,
     clinicToSelect?: any, // New parameter for direct booking trigger
     currentMessages?: Message[], // Add this parameter to prevent stale state
-    specialtyOverride?: string | null // Prevent stale specialty state
+    specialtyOverride?: string | null, // Prevent stale specialty state
+    sessionIdOverride?: string | null // NEW: Prevent stale session ID state
   ) => {
     if (!messageContent.trim() || isLoading) return;
 
@@ -152,11 +153,12 @@ export default function ChatLayout() {
     const lngToSend = coordsOverride !== undefined ? coordsOverride?.lng ?? null : location?.lng ?? null;
 
     try {
+      const activeSessionId = sessionIdOverride || currentSessionId;
       const response = await fetch(`${API_BASE_URL}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          session_id: currentSessionId,
+          session_id: activeSessionId,
           user_id: userId,
           messages: newMessages,
           latitude: latToSend,
@@ -202,7 +204,14 @@ export default function ChatLayout() {
               setLocation(coords);
               setIsWaitingForLocation(false);
               // sendMessage will handle resetting isLoading finally
-              sendMessage("📍 Here is my current location.", coords, undefined, responseMessages, data.specialty_needed);
+              sendMessage(
+                "📍 Here is my current location.", 
+                coords, 
+                undefined, 
+                responseMessages, 
+                data.specialty_needed,
+                data.session_id || currentSessionId // Pass the newly created session ID
+              );
             },
             (err) => {
               console.warn("Location permission denied or error:", err);
