@@ -653,7 +653,6 @@ async def confirmation_agent(state: AgentState) -> dict:
         import json
         import base64
         from email.mime.text import MIMEText
-        from email.mime.multipart import MIMEMultipart
         from google.oauth2.credentials import Credentials
         from google.auth.transport.requests import Request
         from googleapiclient.discovery import build
@@ -703,56 +702,25 @@ async def confirmation_agent(state: AgentState) -> dict:
             appt_date = booking.get("appointment_date")
             appt_time = booking.get("time_slot")
 
-            html_body = f"""
-<html><body style="font-family:Georgia,serif;max-width:560px;margin:auto;padding:32px;background:#f9fafb;color:#374151;">
-  <div style="background:#fff;border-radius:12px;padding:36px 40px;border:1px solid #e5e7eb;box-shadow:0 2px 8px rgba(0,0,0,0.06);">
+            plain_body = f"""Dear {patient},
 
-    <p style="margin:0 0 24px;font-size:15px;">Dear <strong>{patient}</strong>,</p>
+This is a confirmation of your appointment with {doctor} at the clinic. The appointment details are as follows:
 
-    <p style="margin:0 0 16px;font-size:15px;line-height:1.7;">
-      This is a confirmation of your appointment with <strong>{doctor}</strong> at the clinic.
-      The appointment details are as follows:
-    </p>
+Date: {appt_date}
+Time: {appt_time}
+Location: {address}
 
-    <table style="width:100%;border-collapse:collapse;font-size:15px;margin:0 0 20px;">
-      <tr>
-        <td style="padding:8px 0;color:#6b7280;width:60px;">Date:</td>
-        <td style="padding:8px 0;color:#111827;font-weight:600;">{appt_date}</td>
-      </tr>
-      <tr>
-        <td style="padding:8px 0;color:#6b7280;">Time:</td>
-        <td style="padding:8px 0;color:#111827;font-weight:600;">{appt_time}</td>
-      </tr>
-      <tr>
-        <td style="padding:8px 0;color:#6b7280;vertical-align:top;">Location:</td>
-        <td style="padding:8px 0;color:#111827;">{address}</td>
-      </tr>
-    </table>
+Please arrive 15 minutes prior to your scheduled time and bring any necessary documents or information. If you need to reschedule or have any questions, please do not hesitate to contact us.
 
-    <p style="margin:0 0 16px;font-size:15px;line-height:1.7;">
-      Please arrive <strong>15 minutes prior</strong> to your scheduled time and bring any necessary
-      documents or information. If you need to reschedule or have any questions, please do not
-      hesitate to contact us.
-    </p>
+We look forward to seeing you at the clinic.
 
-    <p style="margin:0 0 32px;font-size:15px;line-height:1.7;">
-      We look forward to seeing you at the clinic.
-    </p>
+Best regards,
+{doctor} Clinic"""
 
-    <p style="margin:0;font-size:15px;">Best regards,<br>
-      <strong>{doctor} Clinic</strong>
-    </p>
-
-    <hr style="margin:28px 0;border:none;border-top:1px solid #e5e7eb;">
-    <p style="margin:0;font-size:11px;color:#9ca3af;">This email was sent by DocMatch AI on behalf of {doctor} Clinic.</p>
-  </div>
-</body></html>"""
-
-            msg = MIMEMultipart("alternative")
+            msg = MIMEText(plain_body, "plain")
             msg["Subject"] = f"Appointment Confirmed – {doctor}"
             msg["From"] = "me"
             msg["To"] = recipient
-            msg.attach(MIMEText(html_body, "html"))
 
             raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
             service.users().messages().send(userId="me", body={"raw": raw}).execute()
