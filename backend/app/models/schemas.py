@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 
 
 class Doctor(BaseModel):
@@ -25,3 +25,38 @@ class AppointmentRequest(BaseModel):
     time_slot: str = Field(description="Preferred time slot")
     specialty: Optional[str] = Field(None, description="Medical specialty")
     reason: Optional[str] = Field(None, description="Symptoms or reason for visit")
+
+
+class Message(BaseModel):
+    role: str
+    content: str
+
+
+class ChatRequest(BaseModel):
+    session_id: Optional[str] = None
+    user_id: Optional[str] = None
+    messages: List[Message]
+    # Location data from the frontend 📍 button
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    city: Optional[str] = None
+    location_denied: Optional[bool] = False
+    specialty_needed: Optional[str] = None
+
+    # Booking data from the frontend
+    selected_clinic: Optional[dict] = None
+    current_booking: Optional[dict] = None
+    booking_confirmed: Optional[bool] = False
+    booking_id: Optional[str] = None
+
+
+class ChatResponse(BaseModel):
+    response: str
+    session_id: str
+    action: Optional[str] = None
+    # Return booking state to frontend
+    selected_clinic: Optional[dict] = None
+    current_booking: Optional[dict] = None
+    booking_confirmed: Optional[bool] = False
+    booking_id: Optional[str] = None
+    specialty_needed: Optional[str] = None

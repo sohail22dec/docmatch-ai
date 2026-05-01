@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta
 from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage, AIMessage, HumanMessage
 from langgraph.graph import END
@@ -70,10 +71,12 @@ async def orchestrator_node(state: AgentState) -> dict:
                 break
         if latest_user_msg:
             llm = _get_llm()
-            intent_resp = await llm.ainvoke([
-                SystemMessage(content=INTENT_PROMPT),
-                HumanMessage(content=latest_user_msg),
-            ])
+            intent_resp = await llm.ainvoke(
+                [
+                    SystemMessage(content=INTENT_PROMPT),
+                    HumanMessage(content=latest_user_msg),
+                ]
+            )
             intent = intent_resp.content.strip().lower()
             print(f"[DEBUG] Intent: {intent}")
             if "general_qa" in intent:
@@ -82,7 +85,7 @@ async def orchestrator_node(state: AgentState) -> dict:
             if "booking_request" in intent:
                 print("[DEBUG] Routing to booking_agent")
                 return {"next": "booking_agent"}
-        
+
         print("[DEBUG] Routing to symptom_agent")
         return {"next": "symptom_agent"}
 
@@ -119,7 +122,8 @@ Your job is to read the user's conversation and determine if you have enough inf
 
 Rules:
 - Respond with ONLY a JSON object.
-- If the latest message is "📍 Location shared automatically":
+- If the user explicitly requests a specific doctor or specialty (e.g. "find a gynecologist", "I need a dentist", "where is a cardiologist"), DO NOT ask for symptoms. Immediately output: {"status": "diagnosed", "specialty": "Requested Specialty", "symptoms_summary": "User directly requested this specialty"}.
+- If the latest message is "📍 Here is my current location.":
     - If symptoms were ALREADY discussed: Ignore the location message and continue the triage (re-ask your last question if needed).
     - If NO symptoms have been mentioned yet: Ask "I've received your location! What symptoms are you experiencing today so I can help you find the right doctor?"
 - If symptoms are vague (e.g. "headache", "stomach hurts"), ask a clarifying question.
@@ -174,15 +178,23 @@ async def symptom_agent(state: AgentState) -> dict:
         else:
             specialty = data.get("specialty", "General Physician")
             city = data.get("city")
-            diag_msg = f"Based on your symptoms, I recommend seeing a **{specialty}**."
+            symptoms_summary = data.get("symptoms_summary", "General symptoms")
+
+            if "directly requested" in symptoms_summary.lower():
+                diag_msg = f"Got it! I can help you find a **{specialty}**."
+            else:
+                diag_msg = (
+                    f"Based on your symptoms, I recommend seeing a **{specialty}**."
+                )
+
             if city:
                 diag_msg += f" I'll search for clinics in **{city}** right away."
-            
+
             return {
                 "specialty_needed": specialty,
                 "city": city,
                 "symptoms": data.get("symptoms_summary", "General symptoms"),
-                "messages": [AIMessage(content=diag_msg)] 
+                "messages": [AIMessage(content=diag_msg)],
                 # Note: No final_response here so orchestrator continues to search/location
             }
     except Exception as e:
@@ -190,7 +202,11 @@ async def symptom_agent(state: AgentState) -> dict:
         return {
             "specialty_needed": "General Physician",
             "symptoms": "General symptoms",
-            "messages": [AIMessage(content="I'm analyzing your symptoms. Let me find the right specialist for you.")]
+            "messages": [
+                AIMessage(
+                    content="I'm analyzing your symptoms. Let me find the right specialist for you."
+                )
+            ],
         }
 
 
@@ -206,11 +222,22 @@ async def location_agent(state: AgentState) -> dict:
     with their city in the next message.
     """
     specialty = state.get("specialty_needed", "a doctor")
+    messages = state.get("messages", [])
 
-    ask_message = (
-        f"I can help you find a **{specialty}** near you! 🩺\n\n"
-        f'To find the closest clinics, I need your location. Please **allow location access** when your browser asks, or simply **type your city name** (e.g., "Malda" or "Mumbai").'
-    )
+    prefix = ""
+    if messages and (
+        isinstance(messages[-1], AIMessage) or getattr(messages[-1], "type", "") == "ai"
+    ):
+        prefix = messages[-1].content + "\n\n"
+
+    # Don't say "I can help you find a X" twice if the prefix already implies it
+    if "I can help you find" in prefix:
+        ask_message = f"{prefix}To find the closest clinics, I am requesting your location now. Please click **Allow** on the popup that just appeared. (If you prefer not to share your GPS, you can deny the request and simply type your city name instead)."
+    else:
+        ask_message = (
+            f"{prefix}I can help you find a **{specialty}** near you! 🩺\n\n"
+            f"To find the closest clinics, I am requesting your location now. Please click **Allow** on the popup that just appeared. (If you prefer not to share your GPS, you can deny the request and simply type your city name instead)."
+        )
 
     return {
         "messages": [AIMessage(content=ask_message)],
@@ -369,16 +396,21 @@ async def formatter_agent(state: AgentState) -> dict:
 
 BOOKING_EXTRACT_PROMPT = """You are a medical booking assistant. Extract booking information from the user's message.
 
+Today's Date: {today}
+14-Day Window Ends: {fourteen_days_later}
 Last Question Asked: {last_question}
 User Message: {user_msg}
 Current Booking Data: {current_data}
 
 Rules:
-1. Identify "patient_name", "appointment_date", and "time_slot" from the User Message.
-2. Use the "Last Question Asked" as context. For example, if asked for a time, "Morning" refers to "time_slot".
-3. Respond with ONLY a JSON object. No conversational text.
-4. If no new info is found, return {{}}.
+1. Identify "patient_name", "appointment_date", "time_slot", and "email_id" from the User Message.
+2. Use the "Last Question Asked" as context. For example, if asked for a time, "10am" refers to "time_slot".
+3. For "appointment_date", if the user specifies a date, ensure it is strictly between Today and the 14-Day Window Ends. If it is beyond 14 days or in the past, output "appointment_date" as "INVALID_DATE".
+4. For "time_slot", automatically format it to a 1-hour slot (e.g., if user says "10am", output "10:00 AM - 11:00 AM").
+5. Respond with ONLY a JSON object. No conversational text.
+6. If no new info is found, return {{}}.
 """
+
 
 async def booking_agent(state: AgentState) -> dict:
     """
@@ -387,14 +419,20 @@ async def booking_agent(state: AgentState) -> dict:
     """
     messages = state.get("messages", [])
     latest_msg = messages[-1].content.lower() if messages else ""
-    
+
     # Check for cancellation
-    if any(word in latest_msg for word in ["cancel", "stop", "never mind", "dont want"]):
+    if any(
+        word in latest_msg for word in ["cancel", "stop", "never mind", "dont want"]
+    ):
         return {
             "selected_clinic": None,
             "current_booking": None,
-            "messages": [AIMessage(content="No problem, I've canceled the booking request. How else can I help you?")],
-            "final_response": "Booking canceled."
+            "messages": [
+                AIMessage(
+                    content="No problem, I've canceled the booking request. How else can I help you?"
+                )
+            ],
+            "final_response": "Booking canceled.",
         }
 
     current_booking = state.get("current_booking") or {}
@@ -406,10 +444,12 @@ async def booking_agent(state: AgentState) -> dict:
         latest_msg = messages[-1].content.lower()
         for c in clinics_found:
             name = c.get("name", "").lower()
-            if name in latest_msg or (len(name.split()) > 1 and name.split()[0] in latest_msg):
+            if name in latest_msg or (
+                len(name.split()) > 1 and name.split()[0] in latest_msg
+            ):
                 clinic = c
                 break
-        
+
         if not clinic:
             # Could not identify which clinic. Ask user to be more specific or click a button.
             msg = "I'm not sure which clinic you'd like to book. Could you please provide the full name or click the **'Book'** button next to your choice?"
@@ -419,13 +459,15 @@ async def booking_agent(state: AgentState) -> dict:
     llm = _get_llm(temperature=0)
     user_input = messages[-1].content if messages else ""
     user_input_lower = user_input.lower().strip()
-    
+
     # --- SMART KEYWORD FALLBACK ---
     # For one-word answers, don't even wait for the LLM
     if len(user_input.split()) <= 2:
         if any(w in user_input_lower for w in ["morning", "afternoon", "evening"]):
             current_booking["time_slot"] = user_input.capitalize()
-        if any(w in user_input_lower for w in ["tomorrow", "friday", "monday", "today"]):
+        if any(
+            w in user_input_lower for w in ["tomorrow", "friday", "monday", "today"]
+        ):
             current_booking["appointment_date"] = user_input.capitalize()
 
     # Get last AI message for context
@@ -435,14 +477,25 @@ async def booking_agent(state: AgentState) -> dict:
             last_ai_msg = msg.content
             break
 
-    extract_resp = await llm.ainvoke([
-        SystemMessage(content=BOOKING_EXTRACT_PROMPT.format(
-            current_data=json.dumps(current_booking),
-            user_msg=user_input,
-            last_question=last_ai_msg
-        ))
-    ])
-    
+    # Get current date context
+    now = datetime.now()
+    today_str = now.strftime("%Y-%m-%d, %A")
+    fourteen_days_later_str = (now + timedelta(days=14)).strftime("%Y-%m-%d, %A")
+
+    extract_resp = await llm.ainvoke(
+        [
+            SystemMessage(
+                content=BOOKING_EXTRACT_PROMPT.format(
+                    today=today_str,
+                    fourteen_days_later=fourteen_days_later_str,
+                    current_data=json.dumps(current_booking),
+                    user_msg=user_input,
+                    last_question=last_ai_msg,
+                )
+            )
+        ]
+    )
+
     try:
         content = extract_resp.content.strip()
         # Clean up markdown code blocks if present
@@ -451,12 +504,14 @@ async def booking_agent(state: AgentState) -> dict:
             if content.startswith("json"):
                 content = content[4:]
             content = content.split("```")[0]
-        
+
         new_data = json.loads(content.strip())
         print(f"[booking_agent] Extracted: {new_data}")
         current_booking.update(new_data)
     except Exception as e:
-        print(f"[booking_agent] Data extraction error: {e} | Content: {extract_resp.content}")
+        print(
+            f"[booking_agent] Data extraction error: {e} | Content: {extract_resp.content}"
+        )
 
     # 3. Find first missing field
     # SAFETY: If we STILL don't have a clinic, we can't book.
@@ -467,41 +522,92 @@ async def booking_agent(state: AgentState) -> dict:
     # IMPORTANT: Explicitly check for truthy values to avoid empty string loops
     patient_name = current_booking.get("patient_name")
     if not patient_name or len(str(patient_name).strip()) < 2:
-        clinic_name = clinic.get('name', 'this clinic')
+        clinic_name = clinic.get("name", "this clinic")
         msg = f"Great choice! Booking with **{clinic_name}**.\nI'll need a few details. What's your **full name**?"
         return {
             "selected_clinic": clinic,
-            "current_booking": current_booking, 
-            "messages": [AIMessage(content=msg)], 
-            "final_response": msg
+            "current_booking": current_booking,
+            "messages": [AIMessage(content=msg)],
+            "final_response": msg,
         }
-    
+
     appointment_date = current_booking.get("appointment_date")
-    if not appointment_date:
-        msg = f"Nice to meet you, {patient_name}!\nWhat **date** would you like to book? (e.g., **Tomorrow** or **Friday**)"
+    if appointment_date == "INVALID_DATE":
+        current_booking.pop("appointment_date")  # Remove it so they are asked again
+        msg = f"I'm sorry, {patient_name}, but you can only book appointments up to 14 days in advance. What **valid date** works for you?"
         return {
-            "current_booking": current_booking, 
-            "messages": [AIMessage(content=msg)], 
-            "final_response": msg
+            "current_booking": current_booking,
+            "messages": [AIMessage(content=msg)],
+            "final_response": msg,
+        }
+
+    if not appointment_date:
+        msg = f"Nice to meet you, {patient_name}!\nWhat **date** would you like to book? (e.g., **Tomorrow**, **Next Friday**). You can book up to 14 days in advance."
+        return {
+            "current_booking": current_booking,
+            "messages": [AIMessage(content=msg)],
+            "final_response": msg,
         }
 
     time_slot = current_booking.get("time_slot")
     if not time_slot:
-        msg = f"And what **time** works best for you?\n(Morning, Afternoon, or Evening)"
+        msg = f"And what **time** works best for you on {appointment_date}? (e.g., **10 AM**, **2:30 PM**). Appointments are 1 hour long."
         return {
-            "current_booking": current_booking, 
-            "messages": [AIMessage(content=msg)], 
-            "final_response": msg
+            "current_booking": current_booking,
+            "messages": [AIMessage(content=msg)],
+            "final_response": msg,
         }
 
-    # All fields present -> Complete Booking
+    email_id = current_booking.get("email_id")
+    if not email_id:
+        msg = f"Got it. A 1-hour slot at {time_slot}. Lastly, what is your **email address** so we can send you the confirmation?"
+        return {
+            "current_booking": current_booking,
+            "messages": [AIMessage(content=msg)],
+            "final_response": msg,
+        }
+
+    # Ask for final confirmation
+    confirmed = current_booking.get("confirmed")
+    if not confirmed:
+        # Check if the user just said "yes" in the latest message
+        if user_input_lower in [
+            "yes",
+            "confirm",
+            "ok",
+            "sure",
+            "sounds good",
+            "perfect",
+        ]:
+            current_booking["confirmed"] = True
+        else:
+            specialty = state.get("specialty_needed", "N/A")
+            reason = state.get("symptoms", "Not specified")
+            msg = f"""Please confirm your booking details:
+- **Patient Name**: {patient_name}
+- **Specialty**: {specialty}
+- **Reason**: {reason}
+- **Clinic**: {clinic.get("name")}
+- **Date**: {appointment_date}
+- **Time**: {time_slot}
+- **Email**: {email_id}
+
+If everything looks correct, please reply **"Yes"** to confirm."""
+            return {
+                "current_booking": current_booking,
+                "messages": [AIMessage(content=msg)],
+                "final_response": msg,
+            }
+
+    # All fields present and confirmed -> Complete Booking
     import random
+
     booking_id = f"APT-{random.randint(10000, 99999)}"
-    
+
     return {
         "current_booking": current_booking,
         "booking_id": booking_id,
-        "booking_confirmed": True
+        "booking_confirmed": True,
     }
 
 
@@ -509,29 +615,103 @@ async def booking_agent(state: AgentState) -> dict:
 # CONFIRMATION AGENT
 # ---------------------------------------------------------------------------
 
+
 async def confirmation_agent(state: AgentState) -> dict:
     """
-    Renders a structured booking card (simulated via special tags).
+    Saves booking to Supabase, attempts to send email via MCP, and returns confirmation.
     """
     clinic = state.get("selected_clinic") or {}
     booking = state.get("current_booking") or {}
     bid = state.get("booking_id") or "APT-PENDING"
-    
+
+    # 1. Save to Supabase
+    specialty = state.get("specialty_needed", "N/A")
+    reason = state.get("symptoms", "Not specified")
+
+    booking_data = {
+        "booking_id": bid,
+        "user_id": state.get("user_id"),
+        "clinic_name": clinic.get("name"),
+        "clinic_address": clinic.get("address"),
+        "patient_name": booking.get("patient_name"),
+        "appointment_date": booking.get("appointment_date"),
+        "email_id": booking.get("email_id"),
+        "time_slot": booking.get("time_slot"),
+        "specialty": specialty,
+        "reason": reason,
+        "status": "confirmed",
+    }
+
+    from app.models.crud import create_booking
+
+    create_booking(booking_data)
+
+    # 2. Attempt to send Email via MCP (theposch/gmail-mcp)
+    email_status = "Confirmation email will be sent shortly."
+    try:
+        from mcp.client.stdio import stdio_client, StdioServerParameters
+        from mcp.client.session import ClientSession
+        from langchain_mcp_adapters.tools import load_mcp_tools
+        from langchain_core.messages import HumanMessage
+        import app.core.config as config
+        from langchain_groq import ChatGroq
+        import os
+
+        # Verify token.json exists before attempting
+        if os.path.exists("token.json"):
+            server_params = StdioServerParameters(
+                command="uvx",
+                args=[
+                    "--from", "git+https://github.com/theposch/gmail-mcp.git", 
+                    "gmail", 
+                    "--creds-file-path", "credentials.json", 
+                    "--token-path", "token.json"
+                ]
+            )
+            
+            async with stdio_client(server_params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    tools = await load_mcp_tools(session)
+                    
+                    llm = ChatGroq(
+                        api_key=config.settings.GROQ_API_KEY, 
+                        model="llama-3.3-70b-versatile"
+                    ).bind_tools(tools)
+                    
+                    prompt = f"Send a professional appointment confirmation email to {booking.get('email_id')}. Patient: {booking.get('patient_name')}. Clinic: {clinic.get('name')}. Date: {booking.get('appointment_date')}. Time: {booking.get('time_slot')}."
+                    res = await llm.ainvoke([HumanMessage(content=prompt)])
+                    
+                    if res.tool_calls:
+                        for tcall in res.tool_calls:
+                            tool = next((t for t in tools if t.name == tcall["name"]), None)
+                            if tool:
+                                await tool.ainvoke(tcall["args"])
+
+            email_status = "📧 Confirmation email sent to " + booking.get("email_id", "your email") + "!"
+        else:
+            print("[confirmation_agent] token.json not found, skipping email.")
+    except Exception as e:
+        print(f"[confirmation_agent] MCP Email Error: {e}")
+
     confirmation_msg = f"""
 ---BOOKING_CONFIRMED---
 ID: {bid}
-CLINIC: {clinic.get('name')}
-ADDRESS: {clinic.get('address')}
-PATIENT: {booking.get('patient_name')}
-DATE: {booking.get('appointment_date')}
-TIME: {booking.get('time_slot')}
+CLINIC: {clinic.get("name")}
+ADDRESS: {clinic.get("address")}
+PATIENT: {booking.get("patient_name")}
+SPECIALTY: {specialty}
+REASON: {reason}
+DATE: {booking.get("appointment_date")}
+TIME: {booking.get("time_slot")}
 ---END---
 
-Your appointment has been successfully scheduled! Please call ahead to confirm your slot.
+🎉 Your appointment has been successfully scheduled and saved!
+{email_status}
 """
     return {
         "messages": [AIMessage(content=confirmation_msg)],
-        "final_response": confirmation_msg
+        "final_response": confirmation_msg,
     }
 
 

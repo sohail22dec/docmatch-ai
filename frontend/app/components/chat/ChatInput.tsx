@@ -8,6 +8,7 @@ interface ChatInputProps {
   onInputChange: (value: string) => void;
   onSubmit: (e: React.FormEvent) => void;
   isLoading: boolean;
+  placeholder?: string;
 }
 
 export default function ChatInput({
@@ -15,6 +16,7 @@ export default function ChatInput({
   onInputChange,
   onSubmit,
   isLoading,
+  placeholder,
 }: ChatInputProps) {
   const [mounted, setMounted] = React.useState(false);
 
@@ -37,7 +39,7 @@ export default function ChatInput({
             type="text"
             value={input}
             onChange={(e) => onInputChange(e.target.value)}
-            placeholder="Message Medical Assistant..."
+            placeholder={placeholder || "Message Medical Assistant..."}
             disabled={isLoading}
             className="w-full py-3 pl-4 pr-12 rounded-xl text-sm outline-none transition-all"
             style={{

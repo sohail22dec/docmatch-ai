@@ -11,6 +11,9 @@ class AgentState(TypedDict):
 
     # Full conversation history — add_messages appends, never overwrites
     messages: Annotated[list[AnyMessage], add_messages]
+    
+    # User ID from auth
+    user_id: Optional[str]
 
     # --- Symptom Agent outputs ---
     symptoms: Optional[str]           # Raw symptom text extracted from user message

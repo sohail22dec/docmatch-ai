@@ -26,6 +26,9 @@ export default function ChatLayout() {
   const [isLoading, setIsLoading] = useState(false);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [specialtyNeeded, setSpecialtyNeeded] = useState<string | null>(null);
+  const [isWaitingForLocation, setIsWaitingForLocation] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(false);
@@ -63,7 +66,15 @@ export default function ChatLayout() {
 
   // Fetch sessions on mount
   useEffect(() => {
-    fetchSessions();
+    let storedId = localStorage.getItem("docmatch_user_id");
+    if (!storedId) {
+        storedId = typeof crypto !== "undefined" && crypto.randomUUID 
+            ? crypto.randomUUID() 
+            : "user_" + Math.random().toString(36).substring(2, 11);
+        localStorage.setItem("docmatch_user_id", storedId);
+    }
+    setUserId(storedId);
+    fetchSessions(storedId);
   }, []);
 
   // Dark mode: toggle .dark class on <html> and save to localStorage
@@ -77,9 +88,12 @@ export default function ChatLayout() {
 
   // ---- API Functions ----
 
-  const fetchSessions = async () => {
+  const fetchSessions = async (currentUserId?: string | null) => {
+    const idToUse = currentUserId || userId;
+    if (!idToUse) return;
+
     try {
-      const response = await fetch(`${API_BASE_URL}/api/sessions`);
+      const response = await fetch(`${API_BASE_URL}/api/sessions?user_id=${idToUse}`);
       if (response.ok) {
         const data = await response.json();
         setSessions(data.sessions || []);
@@ -115,12 +129,15 @@ export default function ChatLayout() {
   const sendMessage = async (
     messageContent: string,
     coordsOverride?: { lat: number; lng: number } | null,
-    clinicToSelect?: any // New parameter for direct booking trigger
+    clinicToSelect?: any, // New parameter for direct booking trigger
+    currentMessages?: Message[], // Add this parameter to prevent stale state
+    specialtyOverride?: string | null // Prevent stale specialty state
   ) => {
     if (!messageContent.trim() || isLoading) return;
 
+    const baseMessages = currentMessages || messages;
     const userMessage: Message = { role: "user", content: messageContent };
-    const newMessages = [...messages, userMessage];
+    const newMessages = [...baseMessages, userMessage];
 
     setMessages(newMessages);
     setInput("");
@@ -140,9 +157,11 @@ export default function ChatLayout() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           session_id: currentSessionId,
+          user_id: userId,
           messages: newMessages,
           latitude: latToSend,
           longitude: lngToSend,
+          specialty_needed: specialtyOverride !== undefined ? specialtyOverride : specialtyNeeded,
           selected_clinic: updatedSelectedClinic,
           current_booking: currentBooking,
           booking_confirmed: bookingConfirmed,
@@ -154,16 +173,18 @@ export default function ChatLayout() {
 
       const data = await response.json();
 
-      setMessages([
+      const responseMessages: Message[] = [
         ...newMessages,
         { role: "assistant", content: data.response },
-      ]);
+      ];
+      setMessages(responseMessages);
 
       // Update booking state from backend response
       setSelectedClinic(data.selected_clinic);
       setCurrentBooking(data.current_booking);
       setBookingConfirmed(data.booking_confirmed);
       setBookingId(data.booking_id);
+      setSpecialtyNeeded(data.specialty_needed);
 
       if (!currentSessionId && data.session_id) {
         setCurrentSessionId(data.session_id);
@@ -174,15 +195,18 @@ export default function ChatLayout() {
       if (data.action === "request_location" && !latToSend) {
         if (navigator.geolocation) {
           setIsLoading(true); // Start loading BEFORE the prompt shows
+          setIsWaitingForLocation(true);
           navigator.geolocation.getCurrentPosition(
             (pos) => {
               const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
               setLocation(coords);
+              setIsWaitingForLocation(false);
               // sendMessage will handle resetting isLoading finally
-              sendMessage("📍 Location shared automatically", coords);
+              sendMessage("📍 Here is my current location.", coords, undefined, responseMessages, data.specialty_needed);
             },
             (err) => {
               console.warn("Location permission denied or error:", err);
+              setIsWaitingForLocation(false);
               setIsLoading(false); // Stop loading if denied or error
             }
           );
@@ -221,6 +245,7 @@ export default function ChatLayout() {
     setCurrentBooking(null);
     setBookingConfirmed(false);
     setBookingId(null);
+    setSpecialtyNeeded(null);
     if (isMobile) setIsSidebarOpen(false);
   };
 
@@ -303,6 +328,7 @@ export default function ChatLayout() {
           onInputChange={setInput}
           onSubmit={handleSubmit}
           isLoading={isLoading}
+          placeholder={isWaitingForLocation ? "Waiting for location permission..." : "Message Medical Assistant..."}
         />
       </div>
     </div>

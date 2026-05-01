@@ -1,23 +1,28 @@
 from app.models.database import get_supabase_client
 
 
-def create_session(title: str):
+def create_session(title: str, user_id: str = None):
     """Creates a new chat session."""
     client = get_supabase_client()
     # Let Supabase generate the UUID, we just return the inserted row
-    response = client.table("chat_sessions").insert({"title": title}).execute()
+    data = {"title": title}
+    if user_id:
+        data["user_id"] = user_id
+    response = client.table("chat_sessions").insert(data).execute()
     if response.data:
         return response.data[0]
     return None
 
 
-def get_sessions():
-    """Gets all chat sessions ordered by newest first."""
+def get_sessions(user_id: str = None):
+    """Gets all chat sessions ordered by newest first, optionally filtered by user."""
     client = get_supabase_client()
+    query = client.table("chat_sessions").select("*")
+    if user_id:
+        query = query.eq("user_id", user_id)
+        
     response = (
-        client.table("chat_sessions")
-        .select("*")
-        .order("created_at", desc=True)
+        query.order("created_at", desc=True)
         .execute()
     )
     return response.data
@@ -60,3 +65,15 @@ def delete_session(session_id: str):
     client = get_supabase_client()
     response = client.table("chat_sessions").delete().eq("id", session_id).execute()
     return response.data
+
+def create_booking(booking_data: dict):
+    """Creates a new booking in the 'bookings' table."""
+    client = get_supabase_client()
+    try:
+        response = client.table("bookings").insert(booking_data).execute()
+        if response.data:
+            return response.data[0]
+        return None
+    except Exception as e:
+        print(f"[create_booking] Error inserting booking to DB: {e}")
+        return None
