@@ -188,35 +188,45 @@ export default function ChatLayout() {
       setBookingId(data.booking_id);
       setSpecialtyNeeded(data.specialty_needed);
 
+      const isLocationPending = data.action === "request_location" && !latToSend;
+
       if (!currentSessionId && data.session_id) {
         setCurrentSessionId(data.session_id);
-        fetchSessions();
+        // Only refresh sidebar now if we're NOT about to auto-submit a location.
+        // If a location request is coming, we'll refresh after that completes.
+        if (!isLocationPending) {
+          fetchSessions();
+        }
       }
 
       // AUTO-TRIGGER LOCATION: If backend asks for location, trigger browser prompt
-      if (data.action === "request_location" && !latToSend) {
+      if (isLocationPending) {
         if (navigator.geolocation) {
-          setIsLoading(true); // Start loading BEFORE the prompt shows
+          setIsLoading(true);
           setIsWaitingForLocation(true);
+          const resolvedSessionId = data.session_id || currentSessionId;
           navigator.geolocation.getCurrentPosition(
             (pos) => {
               const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
               setLocation(coords);
               setIsWaitingForLocation(false);
-              // sendMessage will handle resetting isLoading finally
               sendMessage(
-                "📍 Here is my current location.", 
-                coords, 
-                undefined, 
-                responseMessages, 
+                "📍 Here is my current location.",
+                coords,
+                undefined,
+                responseMessages,
                 data.specialty_needed,
-                data.session_id || currentSessionId // Pass the newly created session ID
+                resolvedSessionId
               );
+              // Refresh sidebar AFTER the full flow (location reply) is triggered
+              fetchSessions();
             },
             (err) => {
               console.warn("Location permission denied or error:", err);
               setIsWaitingForLocation(false);
-              setIsLoading(false); // Stop loading if denied or error
+              setIsLoading(false);
+              // Still refresh sidebar so the session appears even if location was denied
+              fetchSessions();
             }
           );
         }
