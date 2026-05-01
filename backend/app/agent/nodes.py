@@ -646,80 +646,97 @@ async def confirmation_agent(state: AgentState) -> dict:
 
     create_booking(booking_data)
 
-    # 2. Attempt to send Email via MCP (theposch/gmail-mcp)
+    # 2. Attempt to send Email via Gmail API (direct, no uvx/MCP needed)
     email_status = "Confirmation email will be sent shortly."
     try:
-        from mcp.client.stdio import stdio_client, StdioServerParameters
-        from mcp.client.session import ClientSession
-        from langchain_mcp_adapters.tools import load_mcp_tools
-        from langchain_core.messages import HumanMessage
-        import app.core.config as config
-        from langchain_groq import ChatGroq
         import os
-        import tempfile
+        import json
+        import base64
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+        from googleapiclient.discovery import build
 
-        # Determine paths to use
-        creds_path = "credentials.json"
-        token_path = "token.json"
+        # Load credentials — prefer env vars (for Render), fallback to local files
+        token_json_str = os.environ.get("GOOGLE_TOKEN_JSON")
+        creds_json_str = os.environ.get("GOOGLE_CREDENTIALS_JSON")
 
-        # If running in a hosted environment, local files might be missing.
-        # Fall back to environment variables.
-        if not os.path.exists(token_path) and os.environ.get("GOOGLE_TOKEN_JSON"):
-            # Write env vars to temporary files so the MCP server can read them
-            temp_dir = tempfile.gettempdir()
-            creds_path = os.path.join(temp_dir, "mcp_credentials.json")
-            token_path = os.path.join(temp_dir, "mcp_token.json")
-
-            with open(creds_path, "w") as f:
-                f.write(os.environ.get("GOOGLE_CREDENTIALS_JSON", "{}"))
-            with open(token_path, "w") as f:
-                f.write(os.environ.get("GOOGLE_TOKEN_JSON", "{}"))
-
-        # Verify token file exists before attempting
-        if os.path.exists(token_path):
-            server_params = StdioServerParameters(
-                command="uvx",
-                args=[
-                    "--from",
-                    "git+https://github.com/theposch/gmail-mcp.git",
-                    "gmail",
-                    "--creds-file-path",
-                    creds_path,
-                    "--token-path",
-                    token_path,
-                ],
-            )
-
-            async with stdio_client(server_params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    tools = await load_mcp_tools(session)
-
-                    llm = ChatGroq(
-                        api_key=config.settings.GROQ_API_KEY,
-                        model="llama-3.3-70b-versatile",
-                    ).bind_tools(tools)
-
-                    prompt = f"Send a professional appointment confirmation email to {booking.get('email_id')}. Patient: {booking.get('patient_name')}. Doctor: {clinic.get('name')}. Date: {booking.get('appointment_date')}. Time: {booking.get('time_slot')}."
-                    res = await llm.ainvoke([HumanMessage(content=prompt)])
-
-                    if res.tool_calls:
-                        for tcall in res.tool_calls:
-                            tool = next(
-                                (t for t in tools if t.name == tcall["name"]), None
-                            )
-                            if tool:
-                                await tool.ainvoke(tcall["args"])
-
-            email_status = (
-                "📧 Confirmation email sent to "
-                + booking.get("email_id", "your email")
-                + "!"
-            )
+        if token_json_str:
+            token_data = json.loads(token_json_str)
+        elif os.path.exists("token.json"):
+            with open("token.json") as f:
+                token_data = json.load(f)
         else:
-            print("[confirmation_agent] token.json not found, skipping email.")
+            token_data = None
+
+        if creds_json_str:
+            creds_info = json.loads(creds_json_str)
+        elif os.path.exists("credentials.json"):
+            with open("credentials.json") as f:
+                creds_info = json.load(f)
+        else:
+            creds_info = None
+
+        if token_data and creds_info:
+            client_info = creds_info.get("installed") or creds_info.get("web") or {}
+            creds = Credentials(
+                token=token_data.get("token"),
+                refresh_token=token_data.get("refresh_token"),
+                token_uri=token_data.get("token_uri", "https://oauth2.googleapis.com/token"),
+                client_id=client_info.get("client_id") or token_data.get("client_id"),
+                client_secret=client_info.get("client_secret") or token_data.get("client_secret"),
+                scopes=token_data.get("scopes", ["https://mail.google.com/"]),
+            )
+
+            # Refresh token if expired
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+
+            service = build("gmail", "v1", credentials=creds)
+
+            # Build the email
+            recipient = booking.get("email_id")
+            patient = booking.get("patient_name")
+            doctor = clinic.get("name")
+            address = clinic.get("address", "")
+            appt_date = booking.get("appointment_date")
+            appt_time = booking.get("time_slot")
+
+            html_body = f"""
+<html><body style="font-family:sans-serif;max-width:520px;margin:auto;padding:24px;background:#f9fafb;">
+  <div style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;box-shadow:0 2px 8px rgba(0,0,0,0.06);">
+    <div style="background:#22c55e;padding:20px 24px;">
+      <h2 style="margin:0;color:#fff;font-size:18px;">✅ Appointment Confirmed</h2>
+    </div>
+    <div style="padding:24px;">
+      <p style="margin:0 0 16px;color:#374151;">Hi <strong>{patient}</strong>, your appointment has been successfully booked!</p>
+      <table style="width:100%;border-collapse:collapse;font-size:14px;">
+        <tr><td style="padding:8px 0;color:#6b7280;width:120px;">Doctor</td><td style="padding:8px 0;color:#111827;font-weight:600;">{doctor}</td></tr>
+        <tr><td style="padding:8px 0;color:#6b7280;">Address</td><td style="padding:8px 0;color:#111827;">{address}</td></tr>
+        <tr><td style="padding:8px 0;color:#6b7280;">Date</td><td style="padding:8px 0;color:#111827;">{appt_date}</td></tr>
+        <tr><td style="padding:8px 0;color:#6b7280;">Time</td><td style="padding:8px 0;color:#111827;">{appt_time}</td></tr>
+      </table>
+      <p style="margin:20px 0 0;color:#6b7280;font-size:12px;">Please call ahead to confirm availability. — DocMatch AI</p>
+    </div>
+  </div>
+</body></html>"""
+
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = f"Appointment Confirmed – {doctor}"
+            msg["From"] = "me"
+            msg["To"] = recipient
+            msg.attach(MIMEText(html_body, "html"))
+
+            raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+            service.users().messages().send(userId="me", body={"raw": raw}).execute()
+
+            email_status = f"📧 Confirmation email sent to {recipient}!"
+            print(f"[confirmation_agent] Email sent successfully to {recipient}")
+        else:
+            print("[confirmation_agent] No credentials found, skipping email.")
     except Exception as e:
-        print(f"[confirmation_agent] MCP Email Error: {e}")
+        print(f"[confirmation_agent] Email Error: {e}")
 
     confirmation_msg = f"""
 ---BOOKING_CONFIRMED---
