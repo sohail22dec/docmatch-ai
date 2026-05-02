@@ -25,13 +25,15 @@ export default function ChatInput({
     setMounted(true);
   }, []);
 
-  // Auto-resize textarea
-  useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-      const newHeight = Math.min(textareaRef.current.scrollHeight, 200);
-      textareaRef.current.style.height = `${newHeight}px`;
-    }
+  // Auto-resize textarea — always use scrollHeight for a consistent, uniform height
+  React.useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    // Reset to auto so scrollHeight reflects true content size
+    textarea.style.height = "auto";
+    const newHeight = Math.min(textarea.scrollHeight, 200);
+    textarea.style.height = `${newHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > 200 ? "auto" : "hidden";
   }, [input]);
 
   // Refocus textarea after loading finished
@@ -76,14 +78,14 @@ export default function ChatInput({
             onKeyDown={handleKeyDown}
             placeholder={placeholder || "Message Medical Assistant..."}
             disabled={isLoading}
-            className="w-full py-3 md:py-4 pl-4 md:pl-5 pr-12 md:pr-14 rounded-2xl md:rounded-3xl text-sm md:text-base outline-none transition-all resize-none block leading-relaxed"
+            className="w-full py-3 md:py-4 pl-4 md:pl-5 pr-12 md:pr-14 rounded-2xl md:rounded-3xl text-sm md:text-base outline-none transition-[color,background-color,border-color,box-shadow] resize-none block leading-relaxed"
             style={{
               background: "var(--bg-input)",
               color: "var(--text-primary)",
               border: "1px solid var(--border-input)",
               minHeight: "44px",
               maxHeight: "200px",
-              overflowY: "hidden", // Start hidden to prevent hydration mismatch
+              overflowY: "hidden", 
             }}
             onFocus={(e) => {
               e.currentTarget.style.borderColor = "var(--accent)";
