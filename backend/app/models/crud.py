@@ -76,10 +76,8 @@ def create_booking(booking_data: dict):
         if response.data:
             return response.data[0]
         # If data is empty, the insert was blocked (e.g. by RLS or a constraint)
-        print(f"[create_booking] ❌ Insert returned no data — likely blocked by Supabase RLS policy or missing column. Full response: {response}")
+        print(f"[create_booking] ❌ Insert failed. Full response: {response}")
         return None
     except Exception as e:
-        import traceback
         print(f"[create_booking] ❌ Exception during insert: {e}")
-        print(traceback.format_exc())
         return None

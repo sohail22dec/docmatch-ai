@@ -1,10 +1,17 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
+import dynamic from "next/dynamic";
 import Sidebar from "./Sidebar";
 import ChatHeader from "./ChatHeader";
 import ChatArea from "./ChatArea";
-import ChatInput from "./ChatInput";
+
+// Dynamically import ChatInput with SSR disabled to prevent hydration mismatches 
+// on interactive elements like the button and textarea auto-resize.
+const ChatInput = dynamic(() => import("./ChatInput"), { 
+  ssr: false,
+  loading: () => <div className="h-[76px] w-full" style={{ background: "var(--bg-primary)" }} /> 
+});
 
 type Message = {
   role: "user" | "assistant";

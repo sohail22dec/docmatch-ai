@@ -18,19 +18,23 @@ export default function ChatInput({
   isLoading,
   placeholder,
 }: ChatInputProps) {
-  const [mounted, setMounted] = React.useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  React.useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  // Auto-resize textarea — always use scrollHeight for a consistent, uniform height
+  // Auto-resize textarea — use useLayoutEffect to prevent layout shifts/flashes
   React.useLayoutEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
-    // Reset to auto so scrollHeight reflects true content size
+
+    // Reset height to 'auto' to measure scrollHeight accurately
     textarea.style.height = "auto";
+    
+    // For empty input, force the standard min-height to avoid measurement glitches on some mobile browsers
+    if (!input) {
+      textarea.style.height = "44px";
+      textarea.style.overflowY = "hidden";
+      return;
+    }
+
     const newHeight = Math.min(textarea.scrollHeight, 200);
     textarea.style.height = `${newHeight}px`;
     textarea.style.overflowY = textarea.scrollHeight > 200 ? "auto" : "hidden";
@@ -38,26 +42,22 @@ export default function ChatInput({
 
   // Refocus textarea after loading finished
   useEffect(() => {
-    if (!isLoading && mounted) {
+    if (!isLoading) {
       textareaRef.current?.focus();
     }
-  }, [isLoading, mounted]);
+  }, [isLoading]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (input.trim() && !isLoading) {
-        // Trigger a fake form event to reuse existing onSubmit
         const form = e.currentTarget.closest("form");
-        if (form) {
-          form.requestSubmit();
-        }
+        if (form) form.requestSubmit();
       }
     }
   };
 
-  // Prevent hydration mismatch: force 'true' during initial render on both server and client
-  const isSubmitDisabled = mounted ? !input.trim() || isLoading : true;
+  const isSubmitDisabled = !input.trim() || isLoading;
 
   return (
     <div
@@ -68,7 +68,6 @@ export default function ChatInput({
         onSubmit={onSubmit}
         className="max-w-3xl mx-auto relative flex items-end gap-2"
       >
-        {/* Text input */}
         <div className="relative flex-1">
           <textarea
             ref={textareaRef}
@@ -99,11 +98,11 @@ export default function ChatInput({
           />
           <button
             type="submit"
-            disabled={!mounted || isSubmitDisabled} // Force disabled until mounted
+            disabled={isSubmitDisabled} 
             className="absolute right-1.5 md:right-2 bottom-1.5 md:bottom-2 w-8 h-8 md:w-10 md:h-10 flex items-center justify-center rounded-full transition-all disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
             style={{
-              background: mounted && input.trim() ? "var(--accent)" : "transparent",
-              color: mounted && input.trim()
+              background: input.trim() ? "var(--accent)" : "transparent",
+              color: input.trim()
                 ? "var(--text-on-accent)"
                 : "var(--text-tertiary)",
             }}
@@ -117,12 +116,8 @@ export default function ChatInput({
         </div>
       </form>
 
-      <p
-        className="text-center text-xs mt-1.5 max-w-3xl mx-auto"
-        style={{ color: "var(--text-tertiary)" }}
-      >
-        AI assistant for informational purposes only. Not a substitute for
-        professional medical advice.
+      <p className="text-center text-xs mt-1.5 max-w-3xl mx-auto" style={{ color: "var(--text-tertiary)" }}>
+        AI assistant for informational purposes only. Not a substitute for professional medical advice.
       </p>
     </div>
   );

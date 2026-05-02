@@ -13,7 +13,7 @@ from app.models.crud import (
 def _get_llm(temperature: float = 0.0):
     return ChatGroq(
         api_key=settings.GROQ_API_KEY,
-        model="meta-llama/llama-4-scout-17b-16e-instruct",
+        model="openai/gpt-oss-120b",
         temperature=temperature,
     )
 
@@ -520,9 +520,10 @@ Rules:
 1. Extract "patient_name", "appointment_date", "time_slot", and "email_id" ONLY if the user is clearly providing them in response to a question.
 2. If the user mentions a name in passing earlier in the chat, do NOT extract it as "patient_name" yet. Wait until you have asked "What is your name?".
 3. Use the "Last Question Asked" as context. If you asked for a name and they said "Sohail", that is the "patient_name".
-4. For "appointment_date", if the user specifies a date, ensure it is strictly between Today and the 14-Day Window. If invalid, output "INVALID_DATE".
-5. Respond with ONLY a JSON object. No conversational text.
-6. If no new info is found, return {{}}.
+4. For "appointment_date", you MUST output the date in YYYY-MM-DD format. Use "Today's Date" {today} as reference.
+5. If the user specifies a date, ensure it is strictly between Today and the 14-Day Window. If invalid, output "INVALID_DATE".
+6. Respond with ONLY a JSON object. No conversational text.
+7. If no new info is found, return {{}}.
 """
 
 
@@ -579,10 +580,13 @@ async def booking_agent(state: AgentState) -> dict:
     if len(user_input.split()) <= 2:
         if any(w in user_input_lower for w in ["morning", "afternoon", "evening"]):
             current_booking["time_slot"] = user_input.capitalize()
-        if any(
-            w in user_input_lower for w in ["tomorrow", "friday", "monday", "today"]
-        ):
-            current_booking["appointment_date"] = user_input.capitalize()
+        now = datetime.now()
+        if "today" in user_input_lower:
+            current_booking["appointment_date"] = now.strftime("%Y-%m-%d")
+        elif "tomorrow" in user_input_lower:
+            current_booking["appointment_date"] = (now + timedelta(days=1)).strftime(
+                "%Y-%m-%d"
+            )
 
     # Get last AI message for context
     last_ai_msg = ""
