@@ -48,7 +48,7 @@ export default function ChatHeader({
           className="text-sm font-medium"
           style={{ color: "var(--text-primary)" }}
         >
-          Medical Assistant
+          DocMatch AI
         </span>
       </div>
 

@@ -5,6 +5,7 @@ from langchain_core.messages import SystemMessage, AIMessage, HumanMessage
 from langgraph.graph import END
 from app.core.config import settings
 from app.agent.state import AgentState
+from app.models.crud import create_booking  # Imported at top level — avoids silent import failures
 
 
 def _get_llm(temperature: float = 0.0):
@@ -23,24 +24,67 @@ def _get_llm(temperature: float = 0.0):
 INTENT_PROMPT = """You are an intent classifier for a medical assistant chatbot.
 Look at the user's LATEST message and classify it into exactly one of these intents:
 
-1. "clinic_search" - User is describing symptoms or asking to find a doctor/clinic/specialist
-   Examples: "I have a rash", "find me a cardiologist", "my chest hurts"
+1. "clinic_search" - User is describing symptoms, asking to find a doctor/clinic/specialist, or specifically looking for medical help near their current location.
+   Examples: "I have a rash", "find me a cardiologist", "my chest hurts", "find a doctor near me", "is there any clinic closer to me?", "I am in Mumbai, find a dentist"
 
-2. "booking_request" - User wants to book an appointment with a specific doctor or clinic
-   Examples: "I want to book an appointment with Dr. Akash", "book a visit to dental care", "I pick the first one"
+2. "booking_request" - User wants to book an appointment, is providing booking details, OR is confirming/cancelling a booking.
+   Examples: "I want to book with Dr. Akash", "book a visit", "I pick the first one", "My name is John",
+   "Tomorrow at 10am", "john@example.com", "yes", "yes confirm", "ok", "sure", "sounds good",
+   "correct", "that's right", "go ahead", "no", "cancel", "stop"
 
-3. "general_qa" - User is asking a general question or anything else
-   Examples: "what is Dr. X's phone number?", "what are symptoms of diabetes?", "tell me more about clinic 3"
+3. "general_qa" - User is asking a question or seeking information about a doctor, a disease, or a clinic already discussed.
+   Examples: "where is his clinic?", "what is Dr. X's phone number?", "what are the symptoms of diabetes?", "tell me more about this doctor"
 
 Respond with ONLY one word: clinic_search, booking_request, OR general_qa
 """
 
 
+# ---------------------------------------------------------------------------
+# CONTEXT CLINIC EXTRACTOR
+# ---------------------------------------------------------------------------
+
+EXTRACT_CLINIC_PROMPT = """You are a medical assistant. Read the conversation below and extract the name and address of the doctor or clinic that was most recently discussed.
+
+Output ONLY a JSON object with this format:
+{"name": "Doctor or Clinic Name", "address": "Address if known, otherwise null"}
+
+If no specific doctor or clinic was discussed, output: {"name": null, "address": null}
+Do NOT include any other text.
+"""
+
+
+async def _extract_clinic_from_context(messages: list) -> dict | None:
+    """
+    Reads the conversation history and extracts the doctor/clinic that was
+    most recently discussed, so it can be used as selected_clinic for booking.
+    """
+    recent = messages[-8:] if len(messages) > 8 else messages
+    llm = _get_llm(temperature=0)
+    try:
+        resp = await llm.ainvoke(
+            [SystemMessage(content=EXTRACT_CLINIC_PROMPT)] + recent
+        )
+        content = resp.content.strip()
+        if content.startswith("```"):
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+            content = content.split("```")[0]
+        data = json.loads(content.strip())
+        if data.get("name"):
+            return {"name": data["name"], "address": data.get("address") or "Address not available"}
+    except Exception:
+        pass
+    return None
+
+
 async def orchestrator_node(state: AgentState) -> dict:
-    print(f"[DEBUG] Entering orchestrator. Specialty: {state.get('specialty_needed')}")
     """
-    Central decision-maker. Uses state-based routing as defined in the plan.
+    Central decision-maker. Always re-classifies intent on every new user message
+    FIRST, before falling back to state-machine routing. This ensures follow-up
+    questions like 'tell me more about Dr. X' are never confused with a new search.
     """
+
     specialty = state.get("specialty_needed")
     latitude = state.get("latitude")
     city = state.get("city")
@@ -51,65 +95,96 @@ async def orchestrator_node(state: AgentState) -> dict:
     final_response = state.get("final_response")
 
     # CRITICAL: If an agent already produced a response for the user, STOP.
-    # This prevents infinite loops when an agent (like symptom_agent) asks a question.
     if final_response:
         return {"next": END}
 
-    # NEW: PRIORITIZE BOOKING FLOW
-    # If a clinic is selected, we MUST stay in booking mode.
-    if selected_clinic and not booking_confirmed:
-        print(f"[DEBUG] Booking mode locked for clinic: {selected_clinic.get('name')}")
-        return {"next": "booking_agent"}
-
-    # 1. Fresh message - If no specialty yet, check if it's a general question
-    if specialty is None:
-        messages = state.get("messages", [])
-        latest_user_msg = ""
-        for msg in reversed(messages):
-            if hasattr(msg, "type") and msg.type == "human":
-                latest_user_msg = msg.content
-                break
-        if latest_user_msg:
-            llm = _get_llm()
-            intent_resp = await llm.ainvoke(
-                [
-                    SystemMessage(content=INTENT_PROMPT),
-                    HumanMessage(content=latest_user_msg),
-                ]
-            )
-            intent = intent_resp.content.strip().lower()
-            print(f"[DEBUG] Intent: {intent}")
-            if "general_qa" in intent:
-                print("[DEBUG] Routing to general_qa_agent")
-                return {"next": "general_qa_agent"}
-            if "booking_request" in intent:
-                print("[DEBUG] Routing to booking_agent")
-                return {"next": "booking_agent"}
-
-        print("[DEBUG] Routing to symptom_agent")
-        return {"next": "symptom_agent"}
-
-    # 2. latitude and city are both None → location_agent
-    if latitude is None and not city:
-        print("[DEBUG] Routing to location_agent")
-        return {"next": "location_agent"}
-
-    # 3. clinics_found is None and search_attempted is False → search_agent
-    if clinics is None and not searched:
-        print("[DEBUG] Routing to search_agent")
-        return {"next": "search_agent"}
-
-    # 4. clinics_found is set and selected_clinic is None → formatter_agent
-    if clinics is not None and selected_clinic is None:
-        print("[DEBUG] Routing to formatter_agent")
-        return {"next": "formatter_agent"}
-
-    # 5. booking_confirmed is True → confirmation_agent
+    # CRITICAL: If booking is already confirmed, route to confirmation_agent immediately.
+    # This MUST be before intent classification to prevent 'yes' from being re-routed to booking_agent.
     if booking_confirmed:
-        print("[DEBUG] Routing to confirmation_agent")
         return {"next": "confirmation_agent"}
 
-    print("[DEBUG] Routing to END (default)")
+
+    # --- ALWAYS re-classify intent on every new user message ---
+    messages = state.get("messages", [])
+    latest_user_msg = ""
+    for msg in reversed(messages):
+        if hasattr(msg, "type") and msg.type == "human":
+            latest_user_msg = msg.content
+            break
+
+    intent = "none"
+    if latest_user_msg:
+        llm = _get_llm()
+        intent_resp = await llm.ainvoke(
+            [
+                SystemMessage(content=INTENT_PROMPT),
+                HumanMessage(content=latest_user_msg),
+            ]
+        )
+        intent = intent_resp.content.strip().lower()
+
+        # Detect if the user is genuinely asking a question
+        question_words = ["what", "where", "when", "how", "why", "who", "which", "can you", "could you", "is there", "do you", "does", "?"]
+        is_a_question = any(w in latest_user_msg.lower() for w in question_words)
+
+        # Fast-path: simple confirmation/cancellation words always go to booking_agent during active booking
+        confirmation_words = ["yes", "no", "ok", "okay", "sure", "confirm", "correct", "right", "go ahead", "sounds good", "perfect", "cancel", "stop"]
+        is_simple_answer = latest_user_msg.strip().lower() in confirmation_words
+
+        if selected_clinic and not booking_confirmed and is_simple_answer:
+            return {"next": "booking_agent"}
+
+        # 1. General QA: only interrupt an active booking if the message is actually a question
+        if "general_qa" in intent:
+            if selected_clinic and not booking_confirmed and not is_a_question:
+                return {"next": "booking_agent"}
+            return {"next": "general_qa_agent"}
+
+        # 2. Explicit booking request or info provision
+        if "booking_request" in intent:
+            # Fix for booking-after-info bug
+            if not selected_clinic and not clinics:
+                extracted = await _extract_clinic_from_context(messages)
+                if extracted:
+                    return {"next": "booking_agent", "selected_clinic": extracted}
+                else:
+                    msg = "I'd love to help you book an appointment! Which doctor or clinic would you like to book with?"
+                    return {
+                        "next": END,
+                        "messages": [AIMessage(content=msg)],
+                        "final_response": msg,
+                    }
+            return {"next": "booking_agent"}
+
+    # 3. PRIORITIZE BOOKING FLOW (Sticky Lock)
+    # If a clinic is selected and no intent matched above, stay in booking mode.
+    if selected_clinic and not booking_confirmed:
+        return {"next": "booking_agent"}
+
+    # 4. Routing based on intent for other flows
+    if "clinic_search" in intent:
+        # clinic_search intent with no specialty yet → triage symptoms first
+        if specialty is None:
+            return {"next": "symptom_agent"}
+
+    # specialty is known and intent is clinic_search (or no explicit intent) → run state machine
+
+    # location_agent: latitude and city are both missing
+    if latitude is None and not city:
+        return {"next": "location_agent"}
+
+    # search_agent: haven't searched yet
+    if clinics is None and not searched:
+        return {"next": "search_agent"}
+
+    # formatter_agent: clinics found but not yet presented
+    if clinics is not None and selected_clinic is None:
+        return {"next": "formatter_agent"}
+
+    # confirmation_agent: booking is confirmed
+    if booking_confirmed:
+        return {"next": "confirmation_agent"}
+
     return {"next": END}
 
 
@@ -117,27 +192,37 @@ async def orchestrator_node(state: AgentState) -> dict:
 # SYMPTOM AGENT
 # ---------------------------------------------------------------------------
 
-SYMPTOM_PROMPT = """You are a medical triage specialist. 
-Your job is to read the user's conversation and determine if you have enough information to assign a medical specialty.
+SYMPTOM_PROMPT = """You are a concise medical triage specialist working for DocMatch AI, an app that helps users find and book specialist doctors.
 
-Rules:
+Your ONLY goal is to determine the correct medical specialty so you can then help the user find a doctor.
+
+CRITICAL RULES:
+- NEVER correct the user's grammar or spelling. Ignore language errors completely.
+- NEVER give medical advice, diagnoses, or treatment suggestions.
+- NEVER give long explanations. Be short and direct.
+- NEVER ask a question if you already have enough information to identify the specialty.
+- If you must ask, ask only ONE focused question per turn. Never ask multiple questions at once.
+- Never ask more than 2-3 questions total across the whole conversation. If you still aren't sure after 2 questions, pick the most likely specialty.
 - Respond with ONLY a JSON object.
-- If the user explicitly requests a specific doctor or specialty (e.g. "find a gynecologist", "I need a dentist", "where is a cardiologist"), DO NOT ask for symptoms. Immediately output: {"status": "diagnosed", "specialty": "Requested Specialty", "symptoms_summary": "User directly requested this specialty"}.
+
+RULES FOR IDENTIFYING SPECIALTY:
+- If the user explicitly requests a specific doctor or specialty (e.g. "find a gynecologist", "I need a dentist", "where is a cardiologist"), immediately output the diagnosed status.
+- If the user's symptoms clearly point to a specialty, immediately diagnose without asking.
+- Only ask a clarifying question if the symptoms are too vague AND you genuinely cannot determine the right specialist without more info.
 - If the latest message is "📍 Here is my current location.":
-    - If symptoms were ALREADY discussed: Ignore the location message and continue the triage (re-ask your last question if needed).
-    - If NO symptoms have been mentioned yet: Ask "I've received your location! What symptoms are you experiencing today so I can help you find the right doctor?"
-- If symptoms are vague (e.g. "headache", "stomach hurts"), ask a clarifying question.
-  Format: {"status": "clarifying", "message": "When did the headache start and how severe is it?"}
-- If symptoms are clear, assign a specialist and extract the city if mentioned.
-  Format: {"status": "diagnosed", "specialty": "Neurologist", "city": "Mumbai", "symptoms_summary": "severe headache for 3 days"}
+    - If symptoms were ALREADY discussed: re-ask your last clarifying question if still needed, or diagnose.
+    - If NO symptoms yet: Ask "Got your location! What symptoms are you experiencing so I can find the right doctor for you?"
+
+OUTPUT FORMATS (JSON only, no other text):
+- When asking a question: {"status": "clarifying", "message": "Your single focused question here"}
+- When specialty is identified: {"status": "diagnosed", "specialty": "Neurologist", "city": "Mumbai", "symptoms_summary": "severe headache for 3 days"}
 - If no city is mentioned, leave "city" as null.
-- Choose from common specialties: Dermatologist, Cardiologist, Neurologist, Orthopedist, Pediatrician, Psychiatrist, Gastroenterologist, ENT Specialist, Ophthalmologist, General Physician, Dentist, Gynecologist, Urologist, Pulmonologist.
-- Do NOT include any other text — only the JSON object.
+
+Available specialties: Dermatologist, Cardiologist, Neurologist, Orthopedist, Pediatrician, Psychiatrist, Gastroenterologist, ENT Specialist, Ophthalmologist, General Physician, Dentist, Gynecologist, Urologist, Pulmonologist.
 """
 
 
 async def symptom_agent(state: AgentState) -> dict:
-    print("[DEBUG] Entering symptom_agent")
     """
     Reads the user's symptoms and outputs the required medical specialty.
     Can ask clarifying questions if symptoms are too vague.
@@ -181,10 +266,10 @@ async def symptom_agent(state: AgentState) -> dict:
             symptoms_summary = data.get("symptoms_summary", "General symptoms")
 
             if "directly requested" in symptoms_summary.lower():
-                diag_msg = f"Got it! I can help you find a **{specialty}**."
+                diag_msg = f"Got it! Based on your request, you should visit a **{specialty}**. Would you like me to help you find one nearby? 🩺"
             else:
                 diag_msg = (
-                    f"Based on your symptoms, I recommend seeing a **{specialty}**."
+                    f"Based on your symptoms, you should visit a **{specialty}**. Would you like me to help you find one nearby? 🩺"
                 )
 
             if city:
@@ -197,8 +282,7 @@ async def symptom_agent(state: AgentState) -> dict:
                 "messages": [AIMessage(content=diag_msg)],
                 # Note: No final_response here so orchestrator continues to search/location
             }
-    except Exception as e:
-        print(f"[symptom_agent] Error: {e}")
+    except Exception:
         return {
             "specialty_needed": "General Physician",
             "symptoms": "General symptoms",
@@ -236,7 +320,7 @@ async def location_agent(state: AgentState) -> dict:
     else:
         ask_message = (
             f"{prefix}I can help you find a **{specialty}** near you! 🩺\n\n"
-            f"To find the closest clinics, I am requesting your location now. Please click **Allow** on the popup that just appeared. (If you prefer not to share your GPS, you can deny the request and simply type your city name instead)."
+            "To find the closest clinics, I am requesting your location now. Please click **Allow** on the popup that just appeared. (If you prefer not to share your GPS, you can deny the request and simply type your city name instead)."
         )
 
     return {
@@ -303,10 +387,10 @@ async def search_agent(state: AgentState) -> dict:
                     }
                 )
         else:
-            print(f"[search_agent] Google Maps status: {data.get('status')}")
+            pass
 
-    except Exception as e:
-        print(f"[search_agent] Google Maps error: {e}")
+    except Exception:
+        pass
 
     # ---- Step 2: Tavily fallback ----
     if not clinics:
@@ -331,8 +415,8 @@ async def search_agent(state: AgentState) -> dict:
                         "source": "Tavily",
                     }
                 )
-        except Exception as e:
-            print(f"[search_agent] Tavily error: {e}")
+        except Exception:
+            pass
 
     return {
         "clinics_found": clinics,
@@ -403,10 +487,10 @@ User Message: {user_msg}
 Current Booking Data: {current_data}
 
 Rules:
-1. Identify "patient_name", "appointment_date", "time_slot", and "email_id" from the User Message.
-2. Use the "Last Question Asked" as context. For example, if asked for a time, "10am" refers to "time_slot".
-3. For "appointment_date", if the user specifies a date, ensure it is strictly between Today and the 14-Day Window Ends. If it is beyond 14 days or in the past, output "appointment_date" as "INVALID_DATE".
-4. For "time_slot", automatically format it to a 1-hour slot (e.g., if user says "10am", output "10:00 AM - 11:00 AM").
+1. Extract "patient_name", "appointment_date", "time_slot", and "email_id" ONLY if the user is clearly providing them in response to a question.
+2. If the user mentions a name in passing earlier in the chat, do NOT extract it as "patient_name" yet. Wait until you have asked "What is your name?".
+3. Use the "Last Question Asked" as context. If you asked for a name and they said "Sohail", that is the "patient_name".
+4. For "appointment_date", if the user specifies a date, ensure it is strictly between Today and the 14-Day Window. If invalid, output "INVALID_DATE".
 5. Respond with ONLY a JSON object. No conversational text.
 6. If no new info is found, return {{}}.
 """
@@ -451,8 +535,8 @@ async def booking_agent(state: AgentState) -> dict:
                 break
 
         if not clinic:
-            # Could not identify which clinic. Ask user to be more specific or click a button.
-            msg = "I'm not sure which clinic you'd like to book. Could you please provide the full name or click the **'Book'** button next to your choice?"
+            # Could not identify which clinic. Ask user which doctor they want to book.
+            msg = "Which doctor or clinic would you like to book an appointment with? Please let me know their name."
             return {"messages": [AIMessage(content=msg)], "final_response": msg}
 
     # 2. Extract info from latest message
@@ -506,24 +590,20 @@ async def booking_agent(state: AgentState) -> dict:
             content = content.split("```")[0]
 
         new_data = json.loads(content.strip())
-        print(f"[booking_agent] Extracted: {new_data}")
         current_booking.update(new_data)
-    except Exception as e:
-        print(
-            f"[booking_agent] Data extraction error: {e} | Content: {extract_resp.content}"
-        )
+    except Exception:
+        pass
 
     # 3. Find first missing field
-    # SAFETY: If we STILL don't have a clinic, we can't book.
     if not clinic:
-        msg = "I'm ready to help you book an appointment! Could you please tell me **which clinic** or **which doctor** you'd like to visit from the list above?"
+        msg = "I'm ready to help you book an appointment! Which doctor or clinic would you like to visit?"
         return {"messages": [AIMessage(content=msg)], "final_response": msg}
 
-    # IMPORTANT: Explicitly check for truthy values to avoid empty string loops
+    # Converational Step-by-Step flow
     patient_name = current_booking.get("patient_name")
     if not patient_name or len(str(patient_name).strip()) < 2:
-        clinic_name = clinic.get("name", "this clinic")
-        msg = f"Great choice! Booking with **{clinic_name}**.\nI'll need a few details. What's your **full name**?"
+        clinic_name = clinic.get("name", "the clinic")
+        msg = f"I'd be happy to help you schedule an appointment with **{clinic_name}**. \n\nFirst, could you please tell me your **full name**?"
         return {
             "selected_clinic": clinic,
             "current_booking": current_booking,
@@ -532,17 +612,13 @@ async def booking_agent(state: AgentState) -> dict:
         }
 
     appointment_date = current_booking.get("appointment_date")
-    if appointment_date == "INVALID_DATE":
-        current_booking.pop("appointment_date")  # Remove it so they are asked again
-        msg = f"I'm sorry, {patient_name}, but you can only book appointments up to 14 days in advance. What **valid date** works for you?"
-        return {
-            "current_booking": current_booking,
-            "messages": [AIMessage(content=msg)],
-            "final_response": msg,
-        }
-
-    if not appointment_date:
-        msg = f"Nice to meet you, {patient_name}!\nWhat **date** would you like to book? (e.g., **Tomorrow**, **Next Friday**). You can book up to 14 days in advance."
+    if not appointment_date or appointment_date == "INVALID_DATE":
+        if appointment_date == "INVALID_DATE":
+            current_booking.pop("appointment_date", None)
+            msg = f"I'm sorry, {patient_name.split()[0]}, but we can only schedule appointments up to 14 days in advance. What **valid date** would you like to book?"
+        else:
+            msg = f"Nice to meet you, {patient_name.split()[0]}! \nWhat **date** would you like to book your appointment for? (e.g., **Tomorrow**, **Next Monday**)."
+        
         return {
             "current_booking": current_booking,
             "messages": [AIMessage(content=msg)],
@@ -551,7 +627,7 @@ async def booking_agent(state: AgentState) -> dict:
 
     time_slot = current_booking.get("time_slot")
     if not time_slot:
-        msg = f"And what **time** works best for you on {appointment_date}? (e.g., **10 AM**, **2:30 PM**). Appointments are 1 hour long."
+        msg = f"Great. And what **time** works best for you on {appointment_date}? (e.g., **10:00 AM**, **2:30 PM**)."
         return {
             "current_booking": current_booking,
             "messages": [AIMessage(content=msg)],
@@ -560,7 +636,7 @@ async def booking_agent(state: AgentState) -> dict:
 
     email_id = current_booking.get("email_id")
     if not email_id:
-        msg = f"Got it. A 1-hour slot at {time_slot}. Lastly, what is your **email address** so we can send you the confirmation?"
+        msg = "Almost done! Lastly, please provide your **email address** so I can send you the confirmation details."
         return {
             "current_booking": current_booking,
             "messages": [AIMessage(content=msg)],
@@ -583,7 +659,7 @@ async def booking_agent(state: AgentState) -> dict:
         else:
             specialty = state.get("specialty_needed", "N/A")
             reason = state.get("symptoms", "Not specified")
-            msg = f"""Please confirm your booking details:
+            msg = """Please confirm your booking details:
 - **Patient Name**: {patient_name}
 - **Specialty**: {specialty}
 - **Reason**: {reason}
@@ -642,15 +718,16 @@ async def confirmation_agent(state: AgentState) -> dict:
         "status": "confirmed",
     }
 
-    from app.models.crud import create_booking
+    db_result = create_booking(booking_data)
+    if db_result:
+        db_status = "✅ Appointment saved to database."
+    else:
+        db_status = "⚠️ Note: There was an issue saving to the database. Please contact support with your booking ID."
 
-    create_booking(booking_data)
 
-    # 2. Attempt to send Email via Gmail API (direct, no uvx/MCP needed)
     email_status = "Confirmation email will be sent shortly."
     try:
         import os
-        import json
         import base64
         from email.mime.text import MIMEText
         from google.oauth2.credentials import Credentials
@@ -702,7 +779,7 @@ async def confirmation_agent(state: AgentState) -> dict:
             appt_date = booking.get("appointment_date")
             appt_time = booking.get("time_slot")
 
-            plain_body = f"""Dear {patient},
+            plain_body = """Dear {patient},
 
 This is a confirmation of your appointment with {doctor} at the clinic. The appointment details are as follows:
 
@@ -726,13 +803,12 @@ Best regards,
             service.users().messages().send(userId="me", body={"raw": raw}).execute()
 
             email_status = f"📧 Confirmation email sent to {recipient}!"
-            print(f"[confirmation_agent] Email sent successfully to {recipient}")
         else:
-            print("[confirmation_agent] No credentials found, skipping email.")
-    except Exception as e:
-        print(f"[confirmation_agent] Email Error: {e}")
+            pass
+    except Exception:
+        pass
 
-    confirmation_msg = f"""
+    confirmation_msg = """
 ---BOOKING_CONFIRMED---
 ID: {bid}
 CLINIC: {clinic.get("name")}
@@ -744,7 +820,8 @@ DATE: {booking.get("appointment_date")}
 TIME: {booking.get("time_slot")}
 ---END---
 
-🎉 Your appointment has been successfully scheduled and saved!
+🎉 Your appointment has been successfully scheduled!
+{db_status}
 {email_status}
 """
     return {
@@ -757,61 +834,64 @@ TIME: {booking.get("time_slot")}
 # GENERAL QA AGENT
 # ---------------------------------------------------------------------------
 
-GENERAL_QA_PROMPT = """You are a helpful medical assistant. Answer the user's question accurately and helpfully.
+GENERAL_QA_PROMPT = """You are a concise, helpful medical assistant for DocMatch AI.
+Answer the user's question clearly and directly using the search results provided.
 
-You have access to web search results (provided below) to help answer the question.
-If the search results contain the answer, use them. If not, use your general medical knowledge.
+CRITICAL RULES:
+- NEVER guess or say "likely" if you have search results. Use the facts.
+- If the user is asking "where" or for "address", provide the specific location from the search results.
+- LOCATION AWARENESS: If the user's current city is provided in the context, and the doctor/clinic you found is in a DIFFERENT city, you MUST inform the user and offer to help them find a different specialist closer to them.
+- Example: "Dr. Smith is in Kolkata. Since you are in Balurghat, would you like me to find a cardiologist closer to you?"
+- NEVER correct the user's grammar.
+- Be short and to the point.
 
-Be conversational, empathetic, and concise. If the user is asking about a specific doctor's 
-contact details and you have them from the search results, provide them clearly.
-Always remind the user to verify contact details directly as they can change.
+CONTEXT:
+- User Current City: {city}
+- Needed Specialty: {specialty}
 """
 
 
 async def general_qa_agent(state: AgentState) -> dict:
     """
-    Handles general questions, follow-up questions about specific doctors,
-    and any query that is NOT a clinic search request.
-    Uses Tavily for live web search when needed.
+    Handles general questions using Tavily for live web search.
+    Generates a optimized search query based on conversation history.
     """
     messages = state.get("messages", [])
-    latest_user_msg = ""
-    for msg in reversed(messages):
-        if isinstance(msg, HumanMessage):
-            latest_user_msg = msg.content
-            break
+    city = state.get("city") or "Unknown"
+    specialty = state.get("specialty_needed") or "General Physician"
 
-    # Try Tavily search for specific factual questions (doctor contact, medical info)
+    # 1. Generate an optimized search query using LLM
+    llm = _get_llm(temperature=0)
+    query_gen_prompt = "Based on the following conversation, generate a short, effective Google search query to answer the user's latest question. Respond with ONLY the query text."
+    
+    recent_messages = messages[-4:] if len(messages) > 4 else messages
+    query_resp = await llm.ainvoke(
+        [SystemMessage(content=query_gen_prompt)] + recent_messages
+    )
+    search_query = query_resp.content.strip().replace('"', '')
+
+    # 2. Execute Tavily search
     search_context = ""
     try:
         from tavily import TavilyClient
-
         client = TavilyClient(api_key=settings.TAVILY_API_KEY)
-        results = client.search(
-            query=latest_user_msg,
-            search_depth="basic",
-        ).get("results", [])
+        results = client.search(query=search_query, search_depth="advanced").get("results", [])
         if results:
-            snippets = [f"- {r.get('title')}: {r.get('content')}" for r in results[:3]]
+            snippets = [f"- {r.get('title')}: {r.get('content')}" for r in results[:5]]
             search_context = "Web search results:\n" + "\n".join(snippets)
-    except Exception as e:
-        print(f"[general_qa_agent] Tavily search error: {e}")
+    except Exception:
+        pass
 
-    llm = _get_llm(temperature=0.3)
-    prompt_messages = [SystemMessage(content=GENERAL_QA_PROMPT)]
-
-    # Include recent conversation context (last 6 messages) for follow-ups
-    recent_messages = messages[-6:] if len(messages) > 6 else messages
+    # 3. Generate final answer
+    prompt_messages = [
+        SystemMessage(content=GENERAL_QA_PROMPT.format(city=city, specialty=specialty))
+    ]
     prompt_messages.extend(recent_messages)
 
     if search_context:
         prompt_messages.append(
-            HumanMessage(
-                content=f"{search_context}\n\nUser question: {latest_user_msg}"
-            )
+            HumanMessage(content=f"{search_context}\n\nAnswer the user's latest question using these facts.")
         )
-    else:
-        prompt_messages.append(HumanMessage(content=latest_user_msg))
 
     response = await llm.ainvoke(prompt_messages)
 

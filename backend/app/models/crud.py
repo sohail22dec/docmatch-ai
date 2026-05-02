@@ -70,10 +70,16 @@ def create_booking(booking_data: dict):
     """Creates a new booking in the 'bookings' table."""
     client = get_supabase_client()
     try:
+        print(f"[create_booking] Inserting: {booking_data}")
         response = client.table("bookings").insert(booking_data).execute()
+        print(f"[create_booking] Supabase response data: {response.data}")
         if response.data:
             return response.data[0]
+        # If data is empty, the insert was blocked (e.g. by RLS or a constraint)
+        print(f"[create_booking] ❌ Insert returned no data — likely blocked by Supabase RLS policy or missing column. Full response: {response}")
         return None
     except Exception as e:
-        print(f"[create_booking] Error inserting booking to DB: {e}")
+        import traceback
+        print(f"[create_booking] ❌ Exception during insert: {e}")
+        print(traceback.format_exc())
         return None

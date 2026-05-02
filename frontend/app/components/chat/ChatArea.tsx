@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from "react";
-import { Bot, Sparkles, MapPin, Star, ExternalLink } from "lucide-react";
+import { useRef, useEffect } from "react";
+import { Bot, Stethoscope, MapPin, Star, ExternalLink, CheckCircle } from "lucide-react";
 
 type Message = {
   role: "user" | "assistant";
@@ -38,7 +38,7 @@ export default function ChatArea({
           className="w-14 h-14 rounded-full flex items-center justify-center mb-5"
           style={{ background: "var(--bg-secondary)" }}
         >
-          <Sparkles size={28} style={{ color: "var(--accent)" }} />
+          <Stethoscope size={28} style={{ color: "var(--accent)" }} />
         </div>
         <h2
           className="text-xl font-semibold mb-2"
@@ -47,14 +47,15 @@ export default function ChatArea({
           How can I help you today?
         </h2>
         <p className="text-sm mb-8 text-center max-w-md">
-          I can help analyze symptoms, search for medical information, and
-          provide general health guidance.
+          I can help you find specialized doctors nearby, analyze your symptoms,
+          and book medical appointments instantly.
         </p>
         <div className="flex flex-wrap gap-2 justify-center max-w-lg">
           {[
-            "I have a bad headache and nausea",
-            "What are common flu symptoms?",
-            "My throat is sore and I have a fever",
+            "Find a dermatologist near me",
+            "I need to book a dentist appointment",
+            "Can you help me find a cardiologists?",
+            "what are the common symptoms of diabetes?",
           ].map((suggestion) => (
             <button
               key={suggestion}
@@ -157,8 +158,8 @@ function BookingConfirmationCard({ data }: { data: any }) {
       }}
     >
       <div className="bg-green-500 px-3 py-2.5 md:p-3 text-white flex items-center gap-2">
-        <Sparkles size={16} className="md:hidden" />
-        <Sparkles size={18} className="hidden md:block" />
+        <CheckCircle size={16} className="md:hidden" />
+        <CheckCircle size={18} className="hidden md:block" />
         <span className="font-bold text-xs md:text-sm text-white">
           Booking Confirmed
         </span>
@@ -431,7 +432,7 @@ function MessageRow({
           className="text-xs font-medium mb-1"
           style={{ color: "var(--text-tertiary)" }}
         >
-          {isUser ? "You" : "Medical Assistant"}
+          {isUser ? "You" : "docmatch-ai"}
         </p>
         <div
           className="text-sm leading-relaxed"

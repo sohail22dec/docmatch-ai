@@ -14,9 +14,6 @@ class Settings(BaseSettings):
     SUPABASE_URL: str = ""
     SUPABASE_SERVICE_KEY: str = ""
 
-    # Supabase
-    SUPABASE_URL: str = ""
-    SUPABASE_SERVICE_KEY: str = ""
 
     # This tells Pydantic to read from the .env file
     model_config = SettingsConfigDict(

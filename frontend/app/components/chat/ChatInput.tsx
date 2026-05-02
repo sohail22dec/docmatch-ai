@@ -1,7 +1,7 @@
 "use client";
 
-import React from "react";
-import { Send, Loader2 } from "lucide-react";
+import React, { useRef, useEffect } from "react";
+import { ArrowUp, Loader2 } from "lucide-react";
 
 interface ChatInputProps {
   input: string;
@@ -19,33 +19,71 @@ export default function ChatInput({
   placeholder,
 }: ChatInputProps) {
   const [mounted, setMounted] = React.useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   React.useEffect(() => {
     setMounted(true);
   }, []);
 
+  // Auto-resize textarea
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+      const newHeight = Math.min(textareaRef.current.scrollHeight, 200);
+      textareaRef.current.style.height = `${newHeight}px`;
+    }
+  }, [input]);
+
+  // Refocus textarea after loading finished
+  useEffect(() => {
+    if (!isLoading && mounted) {
+      textareaRef.current?.focus();
+    }
+  }, [isLoading, mounted]);
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (input.trim() && !isLoading) {
+        // Trigger a fake form event to reuse existing onSubmit
+        const form = e.currentTarget.closest("form");
+        if (form) {
+          form.requestSubmit();
+        }
+      }
+    }
+  };
+
   // Prevent hydration mismatch: force 'true' during initial render on both server and client
-  const isSubmitDisabled = mounted ? (!input.trim() || isLoading) : true;
+  const isSubmitDisabled = mounted ? !input.trim() || isLoading : true;
 
   return (
     <div
       className="shrink-0 px-3 md:px-4 pb-3 md:pb-4 pt-2"
       style={{ background: "var(--bg-primary)" }}
     >
-      <form onSubmit={onSubmit} className="max-w-3xl mx-auto relative flex items-center gap-2">
+      <form
+        onSubmit={onSubmit}
+        className="max-w-3xl mx-auto relative flex items-end gap-2"
+      >
         {/* Text input */}
         <div className="relative flex-1">
-          <input
-            type="text"
+          <textarea
+            ref={textareaRef}
+            rows={1}
             value={input}
             onChange={(e) => onInputChange(e.target.value)}
+            onKeyDown={handleKeyDown}
             placeholder={placeholder || "Message Medical Assistant..."}
             disabled={isLoading}
-            className="w-full py-3 pl-4 pr-12 rounded-xl text-sm outline-none transition-all"
+            className="w-full py-3 md:py-4 pl-4 md:pl-5 pr-12 md:pr-14 rounded-2xl md:rounded-3xl text-sm md:text-base outline-none transition-all resize-none block leading-relaxed"
             style={{
               background: "var(--bg-input)",
               color: "var(--text-primary)",
               border: "1px solid var(--border-input)",
+              minHeight: "44px",
+              maxHeight: "200px",
+              overflowY: "hidden", // Start hidden to prevent hydration mismatch
             }}
             onFocus={(e) => {
               e.currentTarget.style.borderColor = "var(--accent)";
@@ -59,17 +97,19 @@ export default function ChatInput({
           />
           <button
             type="submit"
-            disabled={isSubmitDisabled}
-            className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-lg transition-all disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
+            disabled={!mounted || isSubmitDisabled} // Force disabled until mounted
+            className="absolute right-1.5 md:right-2 bottom-1.5 md:bottom-2 w-8 h-8 md:w-10 md:h-10 flex items-center justify-center rounded-full transition-all disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
             style={{
-              background: input.trim() ? "var(--accent)" : "transparent",
-              color: input.trim() ? "var(--text-on-accent)" : "var(--text-tertiary)",
+              background: mounted && input.trim() ? "var(--accent)" : "transparent",
+              color: mounted && input.trim()
+                ? "var(--text-on-accent)"
+                : "var(--text-tertiary)",
             }}
           >
             {isLoading ? (
               <Loader2 size={18} className="animate-spin" />
             ) : (
-              <Send size={18} />
+              <ArrowUp size={20} strokeWidth={2.5} />
             )}
           </button>
         </div>
@@ -79,7 +119,8 @@ export default function ChatInput({
         className="text-center text-xs mt-1.5 max-w-3xl mx-auto"
         style={{ color: "var(--text-tertiary)" }}
       >
-        AI assistant for informational purposes only. Not a substitute for professional medical advice.
+        AI assistant for informational purposes only. Not a substitute for
+        professional medical advice.
       </p>
     </div>
   );

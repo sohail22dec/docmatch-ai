@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Sidebar from "./Sidebar";
 import ChatHeader from "./ChatHeader";
 import ChatArea from "./ChatArea";
@@ -27,6 +27,8 @@ export default function ChatLayout() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
+  // Ref so fetchSessions always has the current userId without stale closures
+  const userIdRef = useRef<string | null>(null);
   const [specialtyNeeded, setSpecialtyNeeded] = useState<string | null>(null);
   const [isWaitingForLocation, setIsWaitingForLocation] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -64,7 +66,7 @@ export default function ChatLayout() {
     return () => window.removeEventListener("resize", checkMobile);
   }, []);
 
-  // Fetch sessions on mount
+  // Fetch sessions on mount — always using the ref to avoid stale state
   useEffect(() => {
     let storedId = localStorage.getItem("docmatch_user_id");
     if (!storedId) {
@@ -73,6 +75,7 @@ export default function ChatLayout() {
             : "user_" + Math.random().toString(36).substring(2, 11);
         localStorage.setItem("docmatch_user_id", storedId);
     }
+    userIdRef.current = storedId; // Sync ref BEFORE state so all callbacks see it
     setUserId(storedId);
     fetchSessions(storedId);
   }, []);
@@ -89,8 +92,12 @@ export default function ChatLayout() {
   // ---- API Functions ----
 
   const fetchSessions = async (currentUserId?: string | null) => {
-    const idToUse = currentUserId || userId;
-    if (!idToUse) return;
+    // Always prefer the explicit argument, then the ref (always current), then state (may be stale)
+    const idToUse = currentUserId ?? userIdRef.current ?? userId;
+    if (!idToUse) {
+      console.warn("[fetchSessions] No userId available — skipping fetch");
+      return;
+    }
 
     try {
       const response = await fetch(`${API_BASE_URL}/api/sessions?user_id=${idToUse}`);
@@ -195,7 +202,7 @@ export default function ChatLayout() {
         // Only refresh sidebar now if we're NOT about to auto-submit a location.
         // If a location request is coming, we'll refresh after that completes.
         if (!isLocationPending) {
-          fetchSessions();
+          fetchSessions(userIdRef.current); // Pass ref — avoids stale state closure
         }
       }
 
@@ -219,14 +226,14 @@ export default function ChatLayout() {
                 resolvedSessionId
               );
               // Refresh sidebar AFTER the full flow (location reply) is triggered
-              fetchSessions();
+              fetchSessions(userIdRef.current);
             },
             (err) => {
               console.warn("Location permission denied or error:", err);
               setIsWaitingForLocation(false);
               setIsLoading(false);
               // Still refresh sidebar so the session appears even if location was denied
-              fetchSessions();
+              fetchSessions(userIdRef.current);
             }
           );
         }
