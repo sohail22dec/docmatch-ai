@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 # Load .env into os.environ for LangSmith tracing
 load_dotenv()
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Setup: compile the graph and store it in app state
@@ -20,12 +21,13 @@ async def lifespan(app: FastAPI):
     # Teardown (if necessary)
     pass
 
+
 # Initialize FastAPI
 app = FastAPI(
     title=settings.APP_NAME,
     description="Multi-Agent Medical Assistant API powered by LangGraph & Groq",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # Include the chat router

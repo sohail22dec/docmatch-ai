@@ -5,13 +5,15 @@ from langchain_core.messages import SystemMessage, AIMessage, HumanMessage
 from langgraph.graph import END
 from app.core.config import settings
 from app.agent.state import AgentState
-from app.models.crud import create_booking  # Imported at top level — avoids silent import failures
+from app.models.crud import (
+    create_booking,
+)  # Imported at top level — avoids silent import failures
 
 
 def _get_llm(temperature: float = 0.0):
     return ChatGroq(
         api_key=settings.GROQ_API_KEY,
-        model="llama-3.3-70b-versatile",
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
         temperature=temperature,
     )
 
@@ -72,7 +74,10 @@ async def _extract_clinic_from_context(messages: list) -> dict | None:
             content = content.split("```")[0]
         data = json.loads(content.strip())
         if data.get("name"):
-            return {"name": data["name"], "address": data.get("address") or "Address not available"}
+            return {
+                "name": data["name"],
+                "address": data.get("address") or "Address not available",
+            }
     except Exception:
         pass
     return None
@@ -103,7 +108,6 @@ async def orchestrator_node(state: AgentState) -> dict:
     if booking_confirmed:
         return {"next": "confirmation_agent"}
 
-
     # --- ALWAYS re-classify intent on every new user message ---
     messages = state.get("messages", [])
     latest_user_msg = ""
@@ -124,11 +128,39 @@ async def orchestrator_node(state: AgentState) -> dict:
         intent = intent_resp.content.strip().lower()
 
         # Detect if the user is genuinely asking a question
-        question_words = ["what", "where", "when", "how", "why", "who", "which", "can you", "could you", "is there", "do you", "does", "?"]
+        question_words = [
+            "what",
+            "where",
+            "when",
+            "how",
+            "why",
+            "who",
+            "which",
+            "can you",
+            "could you",
+            "is there",
+            "do you",
+            "does",
+            "?",
+        ]
         is_a_question = any(w in latest_user_msg.lower() for w in question_words)
 
         # Fast-path: simple confirmation/cancellation words always go to booking_agent during active booking
-        confirmation_words = ["yes", "no", "ok", "okay", "sure", "confirm", "correct", "right", "go ahead", "sounds good", "perfect", "cancel", "stop"]
+        confirmation_words = [
+            "yes",
+            "no",
+            "ok",
+            "okay",
+            "sure",
+            "confirm",
+            "correct",
+            "right",
+            "go ahead",
+            "sounds good",
+            "perfect",
+            "cancel",
+            "stop",
+        ]
         is_simple_answer = latest_user_msg.strip().lower() in confirmation_words
 
         if selected_clinic and not booking_confirmed and is_simple_answer:
@@ -268,9 +300,7 @@ async def symptom_agent(state: AgentState) -> dict:
             if "directly requested" in symptoms_summary.lower():
                 diag_msg = f"Got it! Based on your request, you should visit a **{specialty}**. Would you like me to help you find one nearby? 🩺"
             else:
-                diag_msg = (
-                    f"Based on your symptoms, you should visit a **{specialty}**. Would you like me to help you find one nearby? 🩺"
-                )
+                diag_msg = f"Based on your symptoms, you should visit a **{specialty}**. Would you like me to help you find one nearby? 🩺"
 
             if city:
                 diag_msg += f" I'll search for clinics in **{city}** right away."
@@ -618,7 +648,7 @@ async def booking_agent(state: AgentState) -> dict:
             msg = f"I'm sorry, {patient_name.split()[0]}, but we can only schedule appointments up to 14 days in advance. What **valid date** would you like to book?"
         else:
             msg = f"Nice to meet you, {patient_name.split()[0]}! \nWhat **date** would you like to book your appointment for? (e.g., **Tomorrow**, **Next Monday**)."
-        
+
         return {
             "current_booking": current_booking,
             "messages": [AIMessage(content=msg)],
@@ -663,7 +693,7 @@ async def booking_agent(state: AgentState) -> dict:
 - **Patient Name**: {patient_name}
 - **Specialty**: {specialty}
 - **Reason**: {reason}
-- **Doctor**: {clinic.get('name')}
+- **Doctor**: {clinic.get("name")}
 - **Date**: {appointment_date}
 - **Time**: {time_slot}
 - **Email**: {email_id}
@@ -724,7 +754,6 @@ async def confirmation_agent(state: AgentState) -> dict:
     else:
         db_status = "⚠️ Note: There was an issue saving to the database. Please contact support with your booking ID."
 
-
     email_status = "Confirmation email will be sent shortly."
     try:
         import os
@@ -759,9 +788,12 @@ async def confirmation_agent(state: AgentState) -> dict:
             creds = Credentials(
                 token=token_data.get("token"),
                 refresh_token=token_data.get("refresh_token"),
-                token_uri=token_data.get("token_uri", "https://oauth2.googleapis.com/token"),
+                token_uri=token_data.get(
+                    "token_uri", "https://oauth2.googleapis.com/token"
+                ),
                 client_id=client_info.get("client_id") or token_data.get("client_id"),
-                client_secret=client_info.get("client_secret") or token_data.get("client_secret"),
+                client_secret=client_info.get("client_secret")
+                or token_data.get("client_secret"),
                 scopes=token_data.get("scopes", ["https://mail.google.com/"]),
             )
 
@@ -811,13 +843,13 @@ Best regards,
     confirmation_msg = f"""
 ---BOOKING_CONFIRMED---
 ID: {bid}
-CLINIC: {clinic.get('name')}
-ADDRESS: {clinic.get('address')}
-PATIENT: {booking.get('patient_name')}
+CLINIC: {clinic.get("name")}
+ADDRESS: {clinic.get("address")}
+PATIENT: {booking.get("patient_name")}
 SPECIALTY: {specialty}
 REASON: {reason}
-DATE: {booking.get('appointment_date')}
-TIME: {booking.get('time_slot')}
+DATE: {booking.get("appointment_date")}
+TIME: {booking.get("time_slot")}
 ---END---
 
 🎉 Your appointment has been successfully scheduled!
@@ -863,19 +895,22 @@ async def general_qa_agent(state: AgentState) -> dict:
     # 1. Generate an optimized search query using LLM
     llm = _get_llm(temperature=0)
     query_gen_prompt = "Based on the following conversation, generate a short, effective Google search query to answer the user's latest question. Respond with ONLY the query text."
-    
+
     recent_messages = messages[-4:] if len(messages) > 4 else messages
     query_resp = await llm.ainvoke(
         [SystemMessage(content=query_gen_prompt)] + recent_messages
     )
-    search_query = query_resp.content.strip().replace('"', '')
+    search_query = query_resp.content.strip().replace('"', "")
 
     # 2. Execute Tavily search
     search_context = ""
     try:
         from tavily import TavilyClient
+
         client = TavilyClient(api_key=settings.TAVILY_API_KEY)
-        results = client.search(query=search_query, search_depth="advanced").get("results", [])
+        results = client.search(query=search_query, search_depth="advanced").get(
+            "results", []
+        )
         if results:
             snippets = [f"- {r.get('title')}: {r.get('content')}" for r in results[:5]]
             search_context = "Web search results:\n" + "\n".join(snippets)
@@ -890,7 +925,9 @@ async def general_qa_agent(state: AgentState) -> dict:
 
     if search_context:
         prompt_messages.append(
-            HumanMessage(content=f"{search_context}\n\nAnswer the user's latest question using these facts.")
+            HumanMessage(
+                content=f"{search_context}\n\nAnswer the user's latest question using these facts."
+            )
         )
 
     response = await llm.ainvoke(prompt_messages)
