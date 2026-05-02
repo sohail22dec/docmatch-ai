@@ -659,11 +659,11 @@ async def booking_agent(state: AgentState) -> dict:
         else:
             specialty = state.get("specialty_needed", "N/A")
             reason = state.get("symptoms", "Not specified")
-            msg = """Please confirm your booking details:
+            msg = f"""Please confirm your booking details:
 - **Patient Name**: {patient_name}
 - **Specialty**: {specialty}
 - **Reason**: {reason}
-- **Doctor**: {clinic.get("name")}
+- **Doctor**: {clinic.get('name')}
 - **Date**: {appointment_date}
 - **Time**: {time_slot}
 - **Email**: {email_id}
@@ -779,7 +779,7 @@ async def confirmation_agent(state: AgentState) -> dict:
             appt_date = booking.get("appointment_date")
             appt_time = booking.get("time_slot")
 
-            plain_body = """Dear {patient},
+            plain_body = f"""Dear {patient},
 
 This is a confirmation of your appointment with {doctor} at the clinic. The appointment details are as follows:
 
@@ -808,16 +808,16 @@ Best regards,
     except Exception:
         pass
 
-    confirmation_msg = """
+    confirmation_msg = f"""
 ---BOOKING_CONFIRMED---
 ID: {bid}
-CLINIC: {clinic.get("name")}
-ADDRESS: {clinic.get("address")}
-PATIENT: {booking.get("patient_name")}
+CLINIC: {clinic.get('name')}
+ADDRESS: {clinic.get('address')}
+PATIENT: {booking.get('patient_name')}
 SPECIALTY: {specialty}
 REASON: {reason}
-DATE: {booking.get("appointment_date")}
-TIME: {booking.get("time_slot")}
+DATE: {booking.get('appointment_date')}
+TIME: {booking.get('time_slot')}
 ---END---
 
 🎉 Your appointment has been successfully scheduled!
