@@ -28,9 +28,9 @@ export default function ChatInput({
     // Reset height to 'auto' to measure scrollHeight accurately
     textarea.style.height = "auto";
     
-    // For empty input, force the standard min-height to avoid measurement glitches on some mobile browsers
+    // For empty input, let it shrink to its natural size determined by padding and min-height
     if (!input) {
-      textarea.style.height = "44px";
+      textarea.style.height = "";
       textarea.style.overflowY = "hidden";
       return;
     }
@@ -77,12 +77,12 @@ export default function ChatInput({
             onKeyDown={handleKeyDown}
             placeholder={placeholder || "Message Medical Assistant..."}
             disabled={isLoading}
-            className="w-full py-3 md:py-4 pl-4 md:pl-5 pr-12 md:pr-14 rounded-2xl md:rounded-3xl text-sm md:text-base outline-none transition-[color,background-color,border-color,box-shadow] resize-none block leading-relaxed"
+            className="w-full py-3.5 pl-4 md:pl-5 pr-12 md:pr-14 rounded-2xl md:rounded-3xl text-sm md:text-base outline-none transition-[color,background-color,border-color,box-shadow] resize-none block leading-6"
             style={{
               background: "var(--bg-input)",
               color: "var(--text-primary)",
               border: "1px solid var(--border-input)",
-              minHeight: "44px",
+              minHeight: "52px",
               maxHeight: "200px",
               overflowY: "hidden", 
             }}
@@ -99,7 +99,7 @@ export default function ChatInput({
           <button
             type="submit"
             disabled={isSubmitDisabled} 
-            className="absolute right-1.5 md:right-2 bottom-1.5 md:bottom-2 w-8 h-8 md:w-10 md:h-10 flex items-center justify-center rounded-full transition-all disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
+            className="absolute right-2 bottom-2 w-8 h-8 md:w-9 md:h-9 flex items-center justify-center rounded-full transition-all disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
             style={{
               background: input.trim() ? "var(--accent)" : "transparent",
               color: input.trim()
