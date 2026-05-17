@@ -60,3 +60,6 @@ class ChatResponse(BaseModel):
     booking_confirmed: Optional[bool] = False
     booking_id: Optional[str] = None
     specialty_needed: Optional[str] = None
+    # Auth / usage limit
+    limit_reached: Optional[bool] = False
+    message_count: Optional[int] = None

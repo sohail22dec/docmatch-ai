@@ -2,15 +2,25 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import dynamic from "next/dynamic";
+import type { User } from "@supabase/supabase-js";
 import Sidebar from "./Sidebar";
 import ChatHeader from "./ChatHeader";
 import ChatArea from "./ChatArea";
+import AuthModal from "../auth/AuthModal";
+import {
+  getOrCreateAnonSession,
+  getAuthToken,
+  getCurrentUser,
+  linkAnonSessions,
+} from "../../../lib/auth";
+import { supabase } from "../../../lib/supabase";
 
-// Dynamically import ChatInput with SSR disabled to prevent hydration mismatches 
-// on interactive elements like the button and textarea auto-resize.
-const ChatInput = dynamic(() => import("./ChatInput"), { 
+// Dynamically import ChatInput with SSR disabled to prevent hydration mismatches
+const ChatInput = dynamic(() => import("./ChatInput"), {
   ssr: false,
-  loading: () => <div className="h-[76px] w-full" style={{ background: "var(--bg-primary)" }} /> 
+  loading: () => (
+    <div className="h-[76px] w-full" style={{ background: "var(--bg-primary)" }} />
+  ),
 });
 
 type Message = {
@@ -24,17 +34,16 @@ type Session = {
   created_at: string;
 };
 
-// Use environment variable for production, fallback to local for dev
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const ANON_MESSAGE_LIMIT = 5;
 
 export default function ChatLayout() {
+  // ── Chat state ───────────────────────────────────────────────────────────
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
-  const [userId, setUserId] = useState<string | null>(null);
-  // Ref so fetchSessions always has the current userId without stale closures
   const userIdRef = useRef<string | null>(null);
   const [specialtyNeeded, setSpecialtyNeeded] = useState<string | null>(null);
   const [isWaitingForLocation, setIsWaitingForLocation] = useState(false);
@@ -43,71 +52,107 @@ export default function ChatLayout() {
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
 
-  // --- Booking State ---
+  // ── Booking state ────────────────────────────────────────────────────────
   const [selectedClinic, setSelectedClinic] = useState<any>(null);
   const [currentBooking, setCurrentBooking] = useState<any>(null);
   const [bookingConfirmed, setBookingConfirmed] = useState(false);
   const [bookingId, setBookingId] = useState<string | null>(null);
 
-  // On mount: detect theme and screen size
+  // ── Auth state ───────────────────────────────────────────────────────────
+  const [user, setUser] = useState<User | null>(null);
+  const [isAnonymous, setIsAnonymous] = useState(true);
+  const [messageCount, setMessageCount] = useState(0);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  // Track the anon user_id BEFORE upgrade so we can link their sessions
+  const anonUserIdRef = useRef<string | null>(null);
+
+  // ── On mount: theme, screen size, auth init ──────────────────────────────
   useEffect(() => {
     const checkMobile = () => {
       const mobile = window.innerWidth < 768;
       setIsMobile(mobile);
-      if (mobile) setIsSidebarOpen(false);
-      else setIsSidebarOpen(true);
+      setIsSidebarOpen(!mobile);
     };
-    
     checkMobile();
     window.addEventListener("resize", checkMobile);
 
     const saved = localStorage.getItem("theme");
-    if (saved === "dark") {
-      setIsDarkMode(true);
-    } else if (saved === "light") {
-      setIsDarkMode(false);
-    } else {
-      setIsDarkMode(window.matchMedia("(prefers-color-scheme: dark)").matches);
-    }
+    if (saved === "dark") setIsDarkMode(true);
+    else if (saved === "light") setIsDarkMode(false);
+    else setIsDarkMode(window.matchMedia("(prefers-color-scheme: dark)").matches);
 
     return () => window.removeEventListener("resize", checkMobile);
   }, []);
 
-  // Fetch sessions on mount — always using the ref to avoid stale state
+  // ── Initialize Supabase Auth ─────────────────────────────────────────────
   useEffect(() => {
-    let storedId = localStorage.getItem("docmatch_user_id");
-    if (!storedId) {
-        storedId = typeof crypto !== "undefined" && crypto.randomUUID 
-            ? crypto.randomUUID() 
-            : "user_" + Math.random().toString(36).substring(2, 11);
-        localStorage.setItem("docmatch_user_id", storedId);
-    }
-    userIdRef.current = storedId; // Sync ref BEFORE state so all callbacks see it
-    setUserId(storedId);
-    fetchSessions(storedId);
+    const initAuth = async () => {
+      const session = await getOrCreateAnonSession();
+      if (session) {
+        const currentUser = session.user;
+        const anon = currentUser.role === "anon" || currentUser.is_anonymous === true;
+
+        setUser(currentUser);
+        setIsAnonymous(anon);
+        userIdRef.current = currentUser.id;
+
+        if (anon) {
+          anonUserIdRef.current = currentUser.id;
+        }
+
+        fetchSessions(currentUser.id);
+      }
+    };
+    initAuth();
+
+    // Listen for sign-in / sign-out events (including Google OAuth redirect)
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        if (event === "SIGNED_IN" && session) {
+          const newUser = session.user;
+          const anon = newUser.role === "anon" || newUser.is_anonymous === true;
+          const prevAnonId = anonUserIdRef.current;
+
+          setUser(newUser);
+          setIsAnonymous(anon);
+          userIdRef.current = newUser.id;
+
+          // If upgrading from anon → real, link sessions on the backend
+          if (!anon && prevAnonId && prevAnonId !== newUser.id) {
+            const token = session.access_token;
+            await linkAnonSessions(prevAnonId, newUser.id, token);
+            anonUserIdRef.current = null;
+          }
+
+          setShowAuthModal(false);
+          fetchSessions(newUser.id);
+        } else if (event === "SIGNED_OUT") {
+          setUser(null);
+          setIsAnonymous(true);
+          userIdRef.current = null;
+          setSessions([]);
+          handleNewChat();
+        }
+      }
+    );
+
+    return () => listener.subscription.unsubscribe();
   }, []);
 
-  // Dark mode: toggle .dark class on <html> and save to localStorage
+  // ── Dark mode sync ───────────────────────────────────────────────────────
   useEffect(() => {
-    if (isDarkMode) {
-      document.documentElement.classList.add("dark");
-    } else {
-      document.documentElement.classList.remove("dark");
-    }
+    document.documentElement.classList.toggle("dark", isDarkMode);
   }, [isDarkMode]);
 
-  // ---- API Functions ----
+  // ── API helpers ──────────────────────────────────────────────────────────
 
   const fetchSessions = async (currentUserId?: string | null) => {
-    // Always prefer the explicit argument, then the ref (always current), then state (may be stale)
-    const idToUse = currentUserId ?? userIdRef.current ?? userId;
-    if (!idToUse) {
-      console.warn("[fetchSessions] No userId available — skipping fetch");
-      return;
-    }
-
+    const idToUse = currentUserId ?? userIdRef.current;
+    if (!idToUse) return;
     try {
-      const response = await fetch(`${API_BASE_URL}/api/sessions?user_id=${idToUse}`);
+      const response = await fetch(
+        `${API_BASE_URL}/api/sessions?user_id=${idToUse}`
+      );
       if (response.ok) {
         const data = await response.json();
         setSessions(data.sessions || []);
@@ -122,15 +167,17 @@ export default function ChatLayout() {
     setIsLoading(true);
     setMessages([]);
     try {
-      const response = await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/messages`);
+      const response = await fetch(
+        `${API_BASE_URL}/api/sessions/${sessionId}/messages`
+      );
       if (response.ok) {
         const data = await response.json();
-        const formatted = data.messages.map((msg: any) => ({
-          role: msg.role,
-          content: msg.content,
-        }));
-        setMessages(formatted);
-        // On mobile, close sidebar after selecting a chat
+        setMessages(
+          data.messages.map((msg: any) => ({
+            role: msg.role,
+            content: msg.content,
+          }))
+        );
         if (isMobile) setIsSidebarOpen(false);
       }
     } catch (error) {
@@ -143,10 +190,10 @@ export default function ChatLayout() {
   const sendMessage = async (
     messageContent: string,
     coordsOverride?: { lat: number; lng: number } | null,
-    clinicToSelect?: any, // New parameter for direct booking trigger
-    currentMessages?: Message[], // Add this parameter to prevent stale state
-    specialtyOverride?: string | null, // Prevent stale specialty state
-    sessionIdOverride?: string | null // NEW: Prevent stale session ID state
+    clinicToSelect?: any,
+    currentMessages?: Message[],
+    specialtyOverride?: string | null,
+    sessionIdOverride?: string | null
   ) => {
     if (!messageContent.trim() || isLoading) return;
 
@@ -158,30 +205,36 @@ export default function ChatLayout() {
     setInput("");
     setIsLoading(true);
 
-    // If we're selecting a clinic, update state locally before sending
     const updatedSelectedClinic = clinicToSelect || selectedClinic;
     if (clinicToSelect) setSelectedClinic(clinicToSelect);
 
-    // Use overrides if provided (for auto-submit on location button click), otherwise use state
-    const latToSend = coordsOverride !== undefined ? coordsOverride?.lat ?? null : location?.lat ?? null;
-    const lngToSend = coordsOverride !== undefined ? coordsOverride?.lng ?? null : location?.lng ?? null;
+    const latToSend =
+      coordsOverride !== undefined ? coordsOverride?.lat ?? null : location?.lat ?? null;
+    const lngToSend =
+      coordsOverride !== undefined ? coordsOverride?.lng ?? null : location?.lng ?? null;
 
     try {
+      const token = await getAuthToken();
       const activeSessionId = sessionIdOverride || currentSessionId;
+
       const response = await fetch(`${API_BASE_URL}/api/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
           session_id: activeSessionId,
-          user_id: userId,
+          user_id: userIdRef.current,
           messages: newMessages,
           latitude: latToSend,
           longitude: lngToSend,
-          specialty_needed: specialtyOverride !== undefined ? specialtyOverride : specialtyNeeded,
+          specialty_needed:
+            specialtyOverride !== undefined ? specialtyOverride : specialtyNeeded,
           selected_clinic: updatedSelectedClinic,
           current_booking: currentBooking,
           booking_confirmed: bookingConfirmed,
-          booking_id: bookingId
+          booking_id: bookingId,
         }),
       });
 
@@ -195,25 +248,28 @@ export default function ChatLayout() {
       ];
       setMessages(responseMessages);
 
-      // Update booking state from backend response
+      // Update booking state
       setSelectedClinic(data.selected_clinic);
       setCurrentBooking(data.current_booking);
       setBookingConfirmed(data.booking_confirmed);
       setBookingId(data.booking_id);
       setSpecialtyNeeded(data.specialty_needed);
 
+      // Track message count & show modal if limit reached
+      if (data.message_count !== undefined) {
+        setMessageCount(data.message_count);
+      }
+      if (data.limit_reached && isAnonymous) {
+        setShowAuthModal(true);
+      }
+
       const isLocationPending = data.action === "request_location" && !latToSend;
 
       if (!currentSessionId && data.session_id) {
         setCurrentSessionId(data.session_id);
-        // Only refresh sidebar now if we're NOT about to auto-submit a location.
-        // If a location request is coming, we'll refresh after that completes.
-        if (!isLocationPending) {
-          fetchSessions(userIdRef.current); // Pass ref — avoids stale state closure
-        }
+        if (!isLocationPending) fetchSessions(userIdRef.current);
       }
 
-      // AUTO-TRIGGER LOCATION: If backend asks for location, trigger browser prompt
       if (isLocationPending) {
         if (navigator.geolocation) {
           setIsLoading(true);
@@ -221,7 +277,10 @@ export default function ChatLayout() {
           const resolvedSessionId = data.session_id || currentSessionId;
           navigator.geolocation.getCurrentPosition(
             (pos) => {
-              const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+              const coords = {
+                lat: pos.coords.latitude,
+                lng: pos.coords.longitude,
+              };
               setLocation(coords);
               setIsWaitingForLocation(false);
               sendMessage(
@@ -232,14 +291,12 @@ export default function ChatLayout() {
                 data.specialty_needed,
                 resolvedSessionId
               );
-              // Refresh sidebar AFTER the full flow (location reply) is triggered
               fetchSessions(userIdRef.current);
             },
             (err) => {
-              console.warn("Location permission denied or error:", err);
+              console.warn("Location permission denied:", err);
               setIsWaitingForLocation(false);
               setIsLoading(false);
-              // Still refresh sidebar so the session appears even if location was denied
               fetchSessions(userIdRef.current);
             }
           );
@@ -251,8 +308,7 @@ export default function ChatLayout() {
         ...newMessages,
         {
           role: "assistant",
-          content:
-            "Sorry, I encountered an error. Please ensure the backend is running.",
+          content: "Sorry, I encountered an error. Please ensure the backend is running.",
         },
       ]);
     } finally {
@@ -266,8 +322,7 @@ export default function ChatLayout() {
   };
 
   const handleBookAppointment = (clinic: any) => {
-    const triggerMsg = `I want to book an appointment at ${clinic.name}`;
-    sendMessage(triggerMsg, undefined, clinic);
+    sendMessage(`I want to book an appointment at ${clinic.name}`, undefined, clinic);
   };
 
   const handleNewChat = () => {
@@ -282,46 +337,55 @@ export default function ChatLayout() {
     if (isMobile) setIsSidebarOpen(false);
   };
 
-  const handleDeleteSession = async (
-    sessionId: string,
-    e: React.MouseEvent
-  ) => {
+  const handleDeleteSession = async (sessionId: string, e: React.MouseEvent) => {
     e.stopPropagation();
-
-    const confirmed = window.confirm(
-      "Are you sure you want to delete this conversation? This cannot be undone."
-    );
-    if (!confirmed) return;
+    if (!window.confirm("Delete this conversation? This cannot be undone.")) return;
 
     setSessions(sessions.filter((s) => s.id !== sessionId));
-    if (currentSessionId === sessionId) {
-      handleNewChat();
-    }
+    if (currentSessionId === sessionId) handleNewChat();
 
     try {
       const response = await fetch(`${API_BASE_URL}/api/sessions/${sessionId}`, {
         method: "DELETE",
       });
-      if (!response.ok) {
-        fetchSessions();
-      }
-    } catch (error) {
-      console.error("Error deleting session:", error);
+      if (!response.ok) fetchSessions();
+    } catch {
       fetchSessions();
     }
   };
 
-  const handleSuggestionClick = (text: string) => {
-    setInput(text);
+  const handleSuggestionClick = (text: string) => setInput(text);
+
+  const handleSignOut = () => {
+    // Re-initialize anonymous session after sign-out
+    getOrCreateAnonSession().then((session) => {
+      if (session) {
+        setUser(session.user);
+        setIsAnonymous(true);
+        setMessageCount(0);
+        anonUserIdRef.current = session.user.id;
+        userIdRef.current = session.user.id;
+        fetchSessions(session.user.id);
+      }
+    });
   };
 
-  // ---- Render ----
-
+  // ── Render ───────────────────────────────────────────────────────────────
   return (
     <div className="h-full flex overflow-hidden" style={{ background: "var(--bg-primary)" }}>
-      {/* Overlay for mobile when sidebar is open */}
+      {/* Auth modal */}
+      {showAuthModal && (
+        <AuthModal
+          onClose={() => setShowAuthModal(false)}
+          onSuccess={() => setShowAuthModal(false)}
+          messageCount={messageCount}
+          limit={ANON_MESSAGE_LIMIT}
+        />
+      )}
+
+      {/* Mobile sidebar overlay */}
       {isMobile && isSidebarOpen && (
-        <div 
+        <div
           className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm transition-opacity"
           onClick={() => setIsSidebarOpen(false)}
         />
@@ -341,12 +405,18 @@ export default function ChatLayout() {
         <ChatHeader
           isDarkMode={isDarkMode}
           onToggleDarkMode={() => {
-            const newValue = !isDarkMode;
-            setIsDarkMode(newValue);
-            localStorage.setItem("theme", newValue ? "dark" : "light");
+            const v = !isDarkMode;
+            setIsDarkMode(v);
+            localStorage.setItem("theme", v ? "dark" : "light");
           }}
           isSidebarOpen={isSidebarOpen}
           onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
+          user={user}
+          isAnonymous={isAnonymous}
+          messageCount={messageCount}
+          anonLimit={ANON_MESSAGE_LIMIT}
+          onSignInClick={() => setShowAuthModal(true)}
+          onSignOut={handleSignOut}
         />
 
         <ChatArea
@@ -361,7 +431,11 @@ export default function ChatLayout() {
           onInputChange={setInput}
           onSubmit={handleSubmit}
           isLoading={isLoading}
-          placeholder={isWaitingForLocation ? "Waiting for location permission..." : "Message Medical Assistant..."}
+          placeholder={
+            isWaitingForLocation
+              ? "Waiting for location permission..."
+              : "Message Medical Assistant..."
+          }
         />
       </div>
     </div>

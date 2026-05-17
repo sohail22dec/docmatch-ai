@@ -13,11 +13,12 @@ class Settings(BaseSettings):
     # Supabase
     SUPABASE_URL: str = ""
     SUPABASE_SERVICE_KEY: str = ""
+    SUPABASE_JWT_SECRET: str = ""
 
 
     # This tells Pydantic to read from the .env file
     model_config = SettingsConfigDict(
-        env_file=".env", 
+        env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore" # Prevents crashing if extra variables are in .env
     )

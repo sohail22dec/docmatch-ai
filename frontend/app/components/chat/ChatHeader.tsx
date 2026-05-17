@@ -2,12 +2,21 @@
 
 import React from "react";
 import { Sun, Moon, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import type { User } from "@supabase/supabase-js";
+import UserMenu from "../auth/UserMenu";
 
 interface ChatHeaderProps {
   isDarkMode: boolean;
   onToggleDarkMode: () => void;
   isSidebarOpen: boolean;
   onToggleSidebar: () => void;
+  // Auth props
+  user: User | null;
+  isAnonymous: boolean;
+  messageCount: number;
+  anonLimit: number;
+  onSignInClick: () => void;
+  onSignOut: () => void;
 }
 
 export default function ChatHeader({
@@ -15,6 +24,12 @@ export default function ChatHeader({
   onToggleDarkMode,
   isSidebarOpen,
   onToggleSidebar,
+  user,
+  isAnonymous,
+  messageCount,
+  anonLimit,
+  onSignInClick,
+  onSignOut,
 }: ChatHeaderProps) {
   return (
     <div
@@ -52,21 +67,32 @@ export default function ChatHeader({
         </span>
       </div>
 
-      {/* Right: dark mode toggle */}
-      <button
-        onClick={onToggleDarkMode}
-        className="p-2 rounded-md transition-colors cursor-pointer"
-        style={{ color: "var(--text-secondary)" }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.background = "var(--bg-hover)";
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.background = "transparent";
-        }}
-        title={isDarkMode ? "Switch to light mode" : "Switch to dark mode"}
-      >
-        {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
-      </button>
+      {/* Right: dark mode toggle + user menu */}
+      <div className="flex items-center gap-2">
+        <button
+          onClick={onToggleDarkMode}
+          className="p-2 rounded-md transition-colors cursor-pointer"
+          style={{ color: "var(--text-secondary)" }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = "var(--bg-hover)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "transparent";
+          }}
+          title={isDarkMode ? "Switch to light mode" : "Switch to dark mode"}
+        >
+          {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
+        </button>
+
+        <UserMenu
+          user={user}
+          isAnonymous={isAnonymous}
+          messageCount={messageCount}
+          limit={anonLimit}
+          onSignInClick={onSignInClick}
+          onSignOut={onSignOut}
+        />
+      </div>
     </div>
   );
 }

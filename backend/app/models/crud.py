@@ -81,3 +81,39 @@ def create_booking(booking_data: dict):
     except Exception as e:
         print(f"[create_booking] ❌ Exception during insert: {e}")
         return None
+
+
+def get_user_message_count(session_id: str, user_id: str) -> int:
+    """
+    Counts how many messages a user has sent in a given session.
+    Used to enforce the 5-message anonymous usage limit.
+    """
+    client = get_supabase_client()
+    try:
+        response = (
+            client.table("chat_messages")
+            .select("id", count="exact")
+            .eq("session_id", session_id)
+            .eq("role", "user")
+            .execute()
+        )
+        return response.count or 0
+    except Exception as e:
+        print(f"[get_user_message_count] Error: {e}")
+        return 0
+
+
+def link_anonymous_sessions(anon_user_id: str, real_user_id: str):
+    """
+    After an anonymous user signs up, reassign all their chat sessions
+    and messages to the new authenticated user_id so history is preserved.
+    """
+    client = get_supabase_client()
+    try:
+        client.table("chat_sessions").update({"user_id": real_user_id}).eq(
+            "user_id", anon_user_id
+        ).execute()
+        print(f"[link_anonymous_sessions] Linked sessions from {anon_user_id} → {real_user_id}")
+    except Exception as e:
+        print(f"[link_anonymous_sessions] Error: {e}")
+
