@@ -54,9 +54,21 @@ export async function signInWithGoogle(): Promise<void> {
     provider: "google",
     options: {
       redirectTo: `${window.location.origin}/`,
+      scopes: "https://www.googleapis.com/auth/calendar",
     },
   });
   if (error) throw new Error(error.message);
+}
+
+/**
+ * Returns the patient's Google OAuth access token (provider_token).
+ * This is only available if the user signed in with Google.
+ * Used by the backend to read/write the patient's Google Calendar.
+ */
+export async function getGoogleCalendarToken(): Promise<string | null> {
+  const { data } = await supabase.auth.getSession();
+  // Supabase stores the Google access token as provider_token in the session
+  return (data.session as any)?.provider_token ?? null;
 }
 
 // ─────────────────────────────────────────────

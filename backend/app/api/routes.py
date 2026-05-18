@@ -163,6 +163,7 @@ async def chat_endpoint(
             "booking_id": chat_request.booking_id,
             "action_required": None,
             "next": None,
+            "google_calendar_token": chat_request.google_calendar_token,
         }
 
         # 7. Run the multi-agent graph

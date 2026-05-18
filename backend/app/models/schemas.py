@@ -49,6 +49,9 @@ class ChatRequest(BaseModel):
     booking_confirmed: Optional[bool] = False
     booking_id: Optional[str] = None
 
+    # Google Calendar token (only for users who signed in with Google)
+    google_calendar_token: Optional[str] = None
+
 
 class ChatResponse(BaseModel):
     response: str

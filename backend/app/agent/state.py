@@ -42,5 +42,9 @@ class AgentState(TypedDict):
     # --- UI Actions ---
     action_required: Optional[str]    # Special signals sent back to the frontend (e.g. "request_location")
     
+    # --- Google Calendar ---
+    google_calendar_token: Optional[str]  # Patient's Google OAuth access token (if signed in with Google)
+
     # --- Internal Routing ---
     next: Optional[str]               # Used by orchestrator to signal next agent
+

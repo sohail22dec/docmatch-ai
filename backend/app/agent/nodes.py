@@ -8,6 +8,15 @@ from app.agent.state import AgentState
 from app.models.crud import (
     create_booking,
 )  # Imported at top level — avoids silent import failures
+from app.agent.calendar_tools import (
+    is_within_business_hours,
+    check_admin_conflict,
+    get_available_slots,
+    check_patient_conflict,
+    create_admin_event,
+    create_patient_event,
+    delete_patient_event,
+)
 
 
 def _get_llm(temperature: float = 0.0):
@@ -661,12 +670,53 @@ async def booking_agent(state: AgentState) -> dict:
 
     time_slot = current_booking.get("time_slot")
     if not time_slot:
-        msg = f"Great. And what **time** works best for you on {appointment_date}? (e.g., **10:00 AM**, **2:30 PM**)."
+        msg = f"Great. And what **time** works best for you on {appointment_date}? Our booking hours are **8:00 AM to 5:00 PM** (e.g., **10:00 AM**, **2:30 PM**)."
         return {
             "current_booking": current_booking,
             "messages": [AIMessage(content=msg)],
             "final_response": msg,
         }
+
+    # ── Business Hours Validation ─────────────────────────────────────────────
+    if not is_within_business_hours(time_slot):
+        current_booking.pop("time_slot", None)
+        msg = (
+            f"Sorry, **{time_slot}** is outside our working hours. "
+            "We accept appointments between **8:00 AM and 5:00 PM** only. "
+            "What time within those hours works best for you?"
+        )
+        return {
+            "current_booking": current_booking,
+            "messages": [AIMessage(content=msg)],
+            "final_response": msg,
+        }
+
+    # ── Admin Calendar Conflict Check ─────────────────────────────────────────
+    admin_conflict_checked = current_booking.get("admin_conflict_checked")
+    if not admin_conflict_checked:
+        current_booking["admin_conflict_checked"] = True
+        if check_admin_conflict(appointment_date, time_slot):
+            available = get_available_slots(appointment_date)
+            current_booking.pop("time_slot", None)
+            current_booking.pop("admin_conflict_checked", None)
+            if available:
+                slots_str = ", ".join(f"**{s}**" for s in available)
+                msg = (
+                    f"Sorry, **{time_slot}** on {appointment_date} is already booked. "
+                    f"Here are the available time slots for that day: {slots_str}. "
+                    "Which one works best for you?"
+                )
+            else:
+                msg = (
+                    f"Sorry, **{time_slot}** on {appointment_date} is already booked, "
+                    "and unfortunately there are no other slots available that day. "
+                    "Would you like to try a different date?"
+                )
+            return {
+                "current_booking": current_booking,
+                "messages": [AIMessage(content=msg)],
+                "final_response": msg,
+            }
 
     email_id = current_booking.get("email_id")
     if not email_id:
@@ -677,7 +727,82 @@ async def booking_agent(state: AgentState) -> dict:
             "final_response": msg,
         }
 
-    # Ask for final confirmation
+    # ── Patient Calendar Conflict Check ───────────────────────────────────────
+    google_token = state.get("google_calendar_token")
+    patient_conflict_checked = current_booking.get("patient_conflict_checked")
+
+    if google_token and not patient_conflict_checked:
+        current_booking["patient_conflict_checked"] = True
+        conflicts = check_patient_conflict(google_token, appointment_date, time_slot)
+        if conflicts:
+            conflict = conflicts[0]  # Handle first conflict
+            current_booking["calendar_conflict"] = conflict
+            msg = (
+                f"You already have **'{conflict['title']}'** at **{conflict['time']}** "
+                f"on your personal Google Calendar. What would you like to do?\n\n"
+                "1️⃣ **Reschedule** my appointment to a different time\n"
+                "2️⃣ **Delete** my existing event and proceed with this booking\n"
+                "3️⃣ **Cancel** this booking"
+            )
+            return {
+                "current_booking": current_booking,
+                "messages": [AIMessage(content=msg)],
+                "final_response": msg,
+            }
+
+    # ── Handle Patient Calendar Conflict Resolution ───────────────────────────
+    calendar_conflict = current_booking.get("calendar_conflict")
+    if calendar_conflict:
+        choice = user_input_lower.strip()
+        # Option 1: Reschedule
+        if any(w in choice for w in ["1", "reschedule", "change", "different time"]):
+            current_booking.pop("time_slot", None)
+            current_booking.pop("calendar_conflict", None)
+            current_booking.pop("patient_conflict_checked", None)
+            current_booking.pop("admin_conflict_checked", None)
+            msg = "No problem! What **new time** would you like to book? (Our hours are 8:00 AM – 5:00 PM)"
+            return {
+                "current_booking": current_booking,
+                "messages": [AIMessage(content=msg)],
+                "final_response": msg,
+            }
+        # Option 2: Delete existing event and proceed
+        elif any(w in choice for w in ["2", "delete", "proceed", "yes", "remove"]):
+            if google_token:
+                deleted = delete_patient_event(google_token, calendar_conflict["id"])
+                if deleted:
+                    current_booking.pop("calendar_conflict", None)
+                    # Fall through to confirmation below
+                else:
+                    msg = "Sorry, I couldn't delete that event. Please delete it manually from your Google Calendar and let me know when you're ready."
+                    return {
+                        "current_booking": current_booking,
+                        "messages": [AIMessage(content=msg)],
+                        "final_response": msg,
+                    }
+        # Option 3: Cancel booking
+        elif any(w in choice for w in ["3", "cancel", "never mind", "stop"]):
+            return {
+                "selected_clinic": None,
+                "current_booking": None,
+                "messages": [AIMessage(content="No problem, I've canceled the booking. How else can I help you?")],
+                "final_response": "Booking canceled.",
+            }
+        else:
+            # Unrecognized — re-ask
+            msg = (
+                "Please choose one of the options:\n"
+                "1️⃣ **Reschedule** my appointment\n"
+                "2️⃣ **Delete** my existing event and proceed\n"
+                "3️⃣ **Cancel** this booking"
+            )
+            return {
+                "current_booking": current_booking,
+                "messages": [AIMessage(content=msg)],
+                "final_response": msg,
+            }
+
+    # ── Final Confirmation ────────────────────────────────────────────────────
     confirmed = current_booking.get("confirmed")
     if not confirmed:
         # Check if the user just said "yes" in the latest message
@@ -844,6 +969,26 @@ Best regards,
     except Exception:
         pass
 
+    # ── Google Calendar Events ────────────────────────────────────────────────
+    calendar_status = ""
+    booking_with_id = {**booking, "booking_id": bid, "specialty": specialty}
+
+    # 1. Always create event on admin calendar
+    admin_event_id = create_admin_event(booking_with_id, clinic)
+    if admin_event_id:
+        calendar_status += "📅 Appointment added to clinic calendar.\n"
+    else:
+        calendar_status += "⚠️ Could not add to clinic calendar.\n"
+
+    # 2. Create event on patient's personal Google Calendar (if token available)
+    google_token = state.get("google_calendar_token")
+    if google_token:
+        patient_event_id = create_patient_event(google_token, booking_with_id, clinic)
+        if patient_event_id:
+            calendar_status += "📅 Appointment added to your personal Google Calendar!"
+        else:
+            calendar_status += "⚠️ Could not add to your personal Google Calendar."
+
     confirmation_msg = f"""
 ---BOOKING_CONFIRMED---
 ID: {bid}
@@ -859,7 +1004,7 @@ TIME: {booking.get("time_slot")}
 🎉 Your appointment has been successfully scheduled!
 {db_status}
 {email_status}
-"""
+{calendar_status}"""
     return {
         "messages": [AIMessage(content=confirmation_msg)],
         "final_response": confirmation_msg,

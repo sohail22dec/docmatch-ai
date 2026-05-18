@@ -12,6 +12,7 @@ import {
   getAuthToken,
   getCurrentUser,
   linkAnonSessions,
+  getGoogleCalendarToken,
 } from "../../../lib/auth";
 import { supabase } from "../../../lib/supabase";
 
@@ -63,6 +64,7 @@ export default function ChatLayout() {
   const [isAnonymous, setIsAnonymous] = useState(true);
   const [messageCount, setMessageCount] = useState(0);
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [googleCalendarToken, setGoogleCalendarToken] = useState<string | null>(null);
   // Track the anon user_id BEFORE upgrade so we can link their sessions
   const anonUserIdRef = useRef<string | null>(null);
 
@@ -126,6 +128,10 @@ export default function ChatLayout() {
 
           setShowAuthModal(false);
           fetchSessions(newUser.id);
+
+          // Grab Google Calendar token (only available for Google sign-in)
+          const calToken = await getGoogleCalendarToken();
+          setGoogleCalendarToken(calToken);
         } else if (event === "SIGNED_OUT") {
           setUser(null);
           setIsAnonymous(true);
@@ -235,6 +241,7 @@ export default function ChatLayout() {
           current_booking: currentBooking,
           booking_confirmed: bookingConfirmed,
           booking_id: bookingId,
+          google_calendar_token: googleCalendarToken,
         }),
       });
 
