@@ -12,7 +12,6 @@ import {
   getAuthToken,
   getCurrentUser,
   linkAnonSessions,
-  getGoogleCalendarToken,
 } from "../../../lib/auth";
 import { supabase } from "../../../lib/supabase";
 
@@ -64,7 +63,6 @@ export default function ChatLayout() {
   const [isAnonymous, setIsAnonymous] = useState(true);
   const [messageCount, setMessageCount] = useState(0);
   const [showAuthModal, setShowAuthModal] = useState(false);
-  const [googleCalendarToken, setGoogleCalendarToken] = useState<string | null>(null);
   // Track the anon user_id BEFORE upgrade so we can link their sessions
   const anonUserIdRef = useRef<string | null>(null);
 
@@ -128,10 +126,6 @@ export default function ChatLayout() {
 
           setShowAuthModal(false);
           fetchSessions(newUser.id);
-
-          // Grab Google Calendar token (only available for Google sign-in)
-          const calToken = await getGoogleCalendarToken();
-          setGoogleCalendarToken(calToken);
         } else if (event === "SIGNED_OUT") {
           setUser(null);
           setIsAnonymous(true);
@@ -223,6 +217,15 @@ export default function ChatLayout() {
       const token = await getAuthToken();
       const activeSessionId = sessionIdOverride || currentSessionId;
 
+      let currentUserId = userIdRef.current;
+      if (!currentUserId) {
+        const u = await getCurrentUser();
+        if (u) {
+          currentUserId = u.id;
+          userIdRef.current = u.id;
+        }
+      }
+
       const response = await fetch(`${API_BASE_URL}/api/chat`, {
         method: "POST",
         headers: {
@@ -231,7 +234,7 @@ export default function ChatLayout() {
         },
         body: JSON.stringify({
           session_id: activeSessionId,
-          user_id: userIdRef.current,
+          user_id: currentUserId,
           messages: newMessages,
           latitude: latToSend,
           longitude: lngToSend,
@@ -241,11 +244,14 @@ export default function ChatLayout() {
           current_booking: currentBooking,
           booking_confirmed: bookingConfirmed,
           booking_id: bookingId,
-          google_calendar_token: googleCalendarToken,
         }),
       });
 
-      if (!response.ok) throw new Error("Failed to fetch response");
+      if (!response.ok) {
+        const errText = await response.text().catch(() => "No text");
+        console.error("HTTP Error:", response.status, errText);
+        throw new Error(`Failed to fetch response: ${response.status} - ${errText}`);
+      }
 
       const data = await response.json();
 

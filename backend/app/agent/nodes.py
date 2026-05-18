@@ -12,10 +12,7 @@ from app.agent.calendar_tools import (
     is_within_business_hours,
     check_admin_conflict,
     get_available_slots,
-    check_patient_conflict,
     create_admin_event,
-    create_patient_event,
-    delete_patient_event,
 )
 
 
@@ -375,11 +372,37 @@ async def location_agent(state: AgentState) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _reverse_geocode(latitude: float, longitude: float) -> str | None:
+    """
+    Use OpenStreetMap Nominatim to convert GPS coordinates to a city name.
+    Free, no API key required. Returns the most specific city/town/village name.
+    """
+    try:
+        import httpx
+        resp = httpx.get(
+            "https://nominatim.openstreetmap.org/reverse",
+            params={"lat": latitude, "lon": longitude, "format": "json", "zoom": 10, "accept-language": "en"},
+            headers={"User-Agent": "DocMatchAI/1.0"},
+            timeout=5,
+        )
+        data = resp.json()
+        addr = data.get("address", {})
+        return (
+            addr.get("city")
+            or addr.get("town")
+            or addr.get("village")
+            or addr.get("county")
+            or addr.get("state")
+        )
+    except Exception:
+        return None
+
+
 async def search_agent(state: AgentState) -> dict:
     """
-    Searches for clinics using a 3-step fallback chain:
-    1. Google Maps Places API (lat/lng or city)
-    2. Tavily web search (fallback)
+    Searches for clinics using a 2-step fallback chain:
+    1. Google Maps Places API (lat/lng or city) — best results, requires billing
+    2. Tavily web search — uses actual city name reverse-geocoded from GPS coordinates
     """
     specialty = state.get("specialty_needed", "doctor")
     latitude = state.get("latitude")
@@ -387,25 +410,30 @@ async def search_agent(state: AgentState) -> dict:
     city = state.get("city")
 
     clinics = []
+    geocoded_city = city  # Will be updated if we reverse geocode
 
-    # ---- Step 1: Google Maps Places API ----
+    # ── Step 1: Resolve city from GPS if not already known ────────────────────
+    if latitude and longitude and not city:
+        geocoded_city = _reverse_geocode(latitude, longitude)
+        if geocoded_city:
+            print(f"[search_agent] Reverse geocoded: ({latitude},{longitude}) → {geocoded_city}")
+
+    # ── Step 2: Google Maps Places API ───────────────────────────────────────
     try:
         import httpx
 
         if latitude and longitude:
-            # Nearby search by GPS coordinates
             url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
             params = {
                 "location": f"{latitude},{longitude}",
-                "radius": 10000,  # 10 km
+                "radius": 10000,
                 "keyword": specialty,
                 "key": settings.GOOGLE_MAPS_API_KEY,
             }
         else:
-            # Text search by city name
             url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
             params = {
-                "query": f"{specialty} in {city}",
+                "query": f"{specialty} in {geocoded_city or city}",
                 "key": settings.GOOGLE_MAPS_API_KEY,
             }
 
@@ -415,51 +443,47 @@ async def search_agent(state: AgentState) -> dict:
 
         if data.get("status") == "OK":
             for place in data.get("results", [])[:8]:
-                clinics.append(
-                    {
-                        "name": place.get("name"),
-                        "address": place.get("formatted_address")
-                        or place.get("vicinity"),
-                        "rating": place.get("rating"),
-                        "open_now": place.get("opening_hours", {}).get("open_now"),
-                        "source": "Google Maps",
-                    }
-                )
+                clinics.append({
+                    "name": place.get("name"),
+                    "address": place.get("formatted_address") or place.get("vicinity"),
+                    "rating": place.get("rating"),
+                    "open_now": place.get("opening_hours", {}).get("open_now"),
+                    "source": "Google Maps",
+                })
         else:
-            pass
+            print(f"[search_agent] Google Maps: {data.get('status')} — {data.get('error_message', '')}")
 
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[search_agent] Google Maps exception: {e}")
 
-    # ---- Step 2: Tavily fallback ----
+    # ── Step 3: Tavily web search (uses real city name from reverse geocoding) ─
     if not clinics:
         try:
             from tavily import TavilyClient
 
-            location_str = city or f"near coordinates {latitude},{longitude}"
-            query = (
-                f"{specialty} clinics in {location_str} with address and phone number"
+            location_str = geocoded_city or city or (
+                f"near {latitude},{longitude}" if latitude else "nearby"
             )
+            query = f"best {specialty} clinics doctors in {location_str} address phone number"
+            print(f"[search_agent] Tavily query: {query}")
             tavily = TavilyClient(api_key=settings.TAVILY_API_KEY)
-            results = tavily.search(query=query, search_depth="advanced").get(
-                "results", []
-            )
+            results = tavily.search(query=query, search_depth="advanced").get("results", [])
             for r in results[:5]:
-                clinics.append(
-                    {
-                        "name": r.get("title"),
-                        "address": r.get("url"),
-                        "rating": None,
-                        "open_now": None,
-                        "source": "Tavily",
-                    }
-                )
-        except Exception:
-            pass
+                clinics.append({
+                    "name": r.get("title"),
+                    "address": r.get("url"),
+                    "rating": None,
+                    "open_now": None,
+                    "source": "Tavily",
+                })
+        except Exception as e:
+            print(f"[search_agent] Tavily error: {e}")
 
     return {
         "clinics_found": clinics,
         "search_attempted": True,
+        # Also update city if we reverse-geocoded it
+        **({"city": city} if city and not state.get("city") else {}),
     }
 
 
@@ -718,6 +742,8 @@ async def booking_agent(state: AgentState) -> dict:
                 "final_response": msg,
             }
 
+
+    # ── Final Confirmation ────────────────────────────────────────────────────
     email_id = current_booking.get("email_id")
     if not email_id:
         msg = "Almost done! Lastly, please provide your **email address** so I can send you the confirmation details."
@@ -727,82 +753,6 @@ async def booking_agent(state: AgentState) -> dict:
             "final_response": msg,
         }
 
-    # ── Patient Calendar Conflict Check ───────────────────────────────────────
-    google_token = state.get("google_calendar_token")
-    patient_conflict_checked = current_booking.get("patient_conflict_checked")
-
-    if google_token and not patient_conflict_checked:
-        current_booking["patient_conflict_checked"] = True
-        conflicts = check_patient_conflict(google_token, appointment_date, time_slot)
-        if conflicts:
-            conflict = conflicts[0]  # Handle first conflict
-            current_booking["calendar_conflict"] = conflict
-            msg = (
-                f"You already have **'{conflict['title']}'** at **{conflict['time']}** "
-                f"on your personal Google Calendar. What would you like to do?\n\n"
-                "1️⃣ **Reschedule** my appointment to a different time\n"
-                "2️⃣ **Delete** my existing event and proceed with this booking\n"
-                "3️⃣ **Cancel** this booking"
-            )
-            return {
-                "current_booking": current_booking,
-                "messages": [AIMessage(content=msg)],
-                "final_response": msg,
-            }
-
-    # ── Handle Patient Calendar Conflict Resolution ───────────────────────────
-    calendar_conflict = current_booking.get("calendar_conflict")
-    if calendar_conflict:
-        choice = user_input_lower.strip()
-        # Option 1: Reschedule
-        if any(w in choice for w in ["1", "reschedule", "change", "different time"]):
-            current_booking.pop("time_slot", None)
-            current_booking.pop("calendar_conflict", None)
-            current_booking.pop("patient_conflict_checked", None)
-            current_booking.pop("admin_conflict_checked", None)
-            msg = "No problem! What **new time** would you like to book? (Our hours are 8:00 AM – 5:00 PM)"
-            return {
-                "current_booking": current_booking,
-                "messages": [AIMessage(content=msg)],
-                "final_response": msg,
-            }
-        # Option 2: Delete existing event and proceed
-        elif any(w in choice for w in ["2", "delete", "proceed", "yes", "remove"]):
-            if google_token:
-                deleted = delete_patient_event(google_token, calendar_conflict["id"])
-                if deleted:
-                    current_booking.pop("calendar_conflict", None)
-                    # Fall through to confirmation below
-                else:
-                    msg = "Sorry, I couldn't delete that event. Please delete it manually from your Google Calendar and let me know when you're ready."
-                    return {
-                        "current_booking": current_booking,
-                        "messages": [AIMessage(content=msg)],
-                        "final_response": msg,
-                    }
-        # Option 3: Cancel booking
-        elif any(w in choice for w in ["3", "cancel", "never mind", "stop"]):
-            return {
-                "selected_clinic": None,
-                "current_booking": None,
-                "messages": [AIMessage(content="No problem, I've canceled the booking. How else can I help you?")],
-                "final_response": "Booking canceled.",
-            }
-        else:
-            # Unrecognized — re-ask
-            msg = (
-                "Please choose one of the options:\n"
-                "1️⃣ **Reschedule** my appointment\n"
-                "2️⃣ **Delete** my existing event and proceed\n"
-                "3️⃣ **Cancel** this booking"
-            )
-            return {
-                "current_booking": current_booking,
-                "messages": [AIMessage(content=msg)],
-                "final_response": msg,
-            }
-
-    # ── Final Confirmation ────────────────────────────────────────────────────
     confirmed = current_booking.get("confirmed")
     if not confirmed:
         # Check if the user just said "yes" in the latest message
@@ -973,21 +923,11 @@ Best regards,
     calendar_status = ""
     booking_with_id = {**booking, "booking_id": bid, "specialty": specialty}
 
-    # 1. Always create event on admin calendar
     admin_event_id = create_admin_event(booking_with_id, clinic)
     if admin_event_id:
         calendar_status += "📅 Appointment added to clinic calendar.\n"
     else:
         calendar_status += "⚠️ Could not add to clinic calendar.\n"
-
-    # 2. Create event on patient's personal Google Calendar (if token available)
-    google_token = state.get("google_calendar_token")
-    if google_token:
-        patient_event_id = create_patient_event(google_token, booking_with_id, clinic)
-        if patient_event_id:
-            calendar_status += "📅 Appointment added to your personal Google Calendar!"
-        else:
-            calendar_status += "⚠️ Could not add to your personal Google Calendar."
 
     confirmation_msg = f"""
 ---BOOKING_CONFIRMED---

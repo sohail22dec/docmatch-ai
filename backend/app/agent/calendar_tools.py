@@ -1,9 +1,7 @@
 """
 Google Calendar utility functions for DocMatch AI booking system.
 
-Two calendars:
-  1. Admin/Clinic Calendar  — server-side (token.json). Tracks all bookings.
-  2. Patient Personal Calendar — uses patient's Google OAuth access token.
+Admin/Clinic Calendar — server-side (token.json). Tracks all bookings.
 """
 import json
 import os
@@ -13,7 +11,6 @@ from typing import Optional
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
-from google.oauth2.credentials import Credentials as OAuthCredentials
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -72,19 +69,6 @@ def _get_admin_calendar_service():
         return build("calendar", "v3", credentials=creds)
     except Exception as e:
         print(f"[calendar] Failed to load admin calendar service: {e}")
-        return None
-
-
-def _get_patient_calendar_service(access_token: str):
-    """
-    Build a Calendar API service using the patient's Google OAuth access_token.
-    Returns a service object, or None on failure.
-    """
-    try:
-        creds = OAuthCredentials(token=access_token)
-        return build("calendar", "v3", credentials=creds)
-    except Exception as e:
-        print(f"[calendar] Failed to build patient calendar service: {e}")
         return None
 
 
@@ -249,128 +233,6 @@ def create_admin_event(booking_data: dict, clinic: dict) -> Optional[str]:
     except Exception as e:
         print(f"[calendar] create_admin_event error: {e}")
         return None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Patient Calendar — Conflict Check & Event Creation
-# ─────────────────────────────────────────────────────────────────────────────
-
-def check_patient_conflict(access_token: str, date_str: str, time_str: str) -> list[dict]:
-    """
-    Checks the patient's personal Google Calendar for conflicts at the given slot.
-    Returns a list of conflicting events: [{id, title, time}, ...]
-    """
-    service = _get_patient_calendar_service(access_token)
-    if not service:
-        return []
-
-    try:
-        slot_start = _parse_slot_datetime(date_str, time_str)
-        if not slot_start:
-            return []
-
-        slot_end = slot_start + timedelta(hours=1)
-        time_min = slot_start.isoformat() + "Z"
-        time_max = slot_end.isoformat() + "Z"
-
-        events_result = service.events().list(
-            calendarId="primary",
-            timeMin=time_min,
-            timeMax=time_max,
-            singleEvents=True,
-        ).execute()
-
-        conflicts = []
-        for event in events_result.get("items", []):
-            start = event.get("start", {}).get("dateTime", "")
-            display_time = ""
-            if start:
-                try:
-                    dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
-                    display_time = dt.strftime("%-I:%M %p")
-                except Exception:
-                    display_time = start
-
-            conflicts.append({
-                "id": event.get("id"),
-                "title": event.get("summary", "Untitled Event"),
-                "time": display_time,
-            })
-
-        return conflicts
-
-    except Exception as e:
-        print(f"[calendar] check_patient_conflict error: {e}")
-        return []
-
-
-def create_patient_event(access_token: str, booking_data: dict, clinic: dict) -> Optional[str]:
-    """
-    Creates a Google Calendar event on the patient's personal calendar.
-    Returns the event ID on success, or None on failure.
-    """
-    service = _get_patient_calendar_service(access_token)
-    if not service:
-        return None
-
-    try:
-        slot_start = _parse_slot_datetime(
-            booking_data.get("appointment_date", ""),
-            booking_data.get("time_slot", ""),
-        )
-        if not slot_start:
-            return None
-
-        slot_end = slot_start + timedelta(hours=1)
-        doctor = clinic.get("name", "Clinic")
-        address = clinic.get("address", "")
-        specialty = booking_data.get("specialty", "")
-        bid = booking_data.get("booking_id", "")
-
-        event = {
-            "summary": f"Medical Appointment — {doctor}",
-            "location": address,
-            "description": (
-                f"Booking ID: {bid}\n"
-                f"Specialty: {specialty}\n"
-                f"Clinic: {doctor}\n"
-                f"Address: {address}\n\n"
-                "Booked via DocMatch AI"
-            ),
-            "start": {"dateTime": slot_start.isoformat(), "timeZone": "UTC"},
-            "end": {"dateTime": slot_end.isoformat(), "timeZone": "UTC"},
-            "reminders": {
-                "useDefault": False,
-                "overrides": [
-                    {"method": "email", "minutes": 60},
-                    {"method": "popup", "minutes": 30},
-                ],
-            },
-        }
-
-        created = service.events().insert(calendarId="primary", body=event).execute()
-        return created.get("id")
-
-    except Exception as e:
-        print(f"[calendar] create_patient_event error: {e}")
-        return None
-
-
-def delete_patient_event(access_token: str, event_id: str) -> bool:
-    """
-    Deletes an event from the patient's personal Google Calendar.
-    Returns True on success, False on failure.
-    """
-    service = _get_patient_calendar_service(access_token)
-    if not service:
-        return False
-
-    try:
-        service.events().delete(calendarId="primary", eventId=event_id).execute()
-        return True
-    except Exception as e:
-        print(f"[calendar] delete_patient_event error: {e}")
-        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
