@@ -19,7 +19,7 @@ from app.agent.calendar_tools import (
 def _get_llm(temperature: float = 0.0):
     return ChatGroq(
         api_key=settings.GROQ_API_KEY,
-        model="openai/gpt-oss-120b",
+        model="llama-3.3-70b-versatile",
         temperature=temperature,
     )
 
@@ -73,12 +73,11 @@ async def _extract_clinic_from_context(messages: list) -> dict | None:
             [SystemMessage(content=EXTRACT_CLINIC_PROMPT)] + recent
         )
         content = resp.content.strip()
-        if content.startswith("```"):
-            content = content.split("```")[1]
-            if content.startswith("json"):
-                content = content[4:]
-            content = content.split("```")[0]
-        data = json.loads(content.strip())
+        start = content.find("{")
+        end = content.rfind("}")
+        if start != -1 and end != -1:
+            content = content[start : end + 1]
+        data = json.loads(content)
         if data.get("name"):
             return {
                 "name": data["name"],
@@ -277,14 +276,14 @@ async def symptom_agent(state: AgentState) -> dict:
     response = await llm.ainvoke(prompt_messages)
 
     try:
-        # Strip markdown block if llm wrapped the json
         content = response.content.strip()
-        if content.startswith("```json"):
-            content = content.split("```json")[1]
-        if content.endswith("```"):
-            content = content.rsplit("```", 1)[0]
+        # More robust JSON extraction to handle leading/trailing text and markdown
+        start = content.find("{")
+        end = content.rfind("}")
+        if start != -1 and end != -1:
+            content = content[start : end + 1]
 
-        data = json.loads(content.strip())
+        data = json.loads(content)
         status = data.get("status")
 
         if status == "clarifying":
@@ -318,7 +317,8 @@ async def symptom_agent(state: AgentState) -> dict:
                 "messages": [AIMessage(content=diag_msg)],
                 # Note: No final_response here so orchestrator continues to search/location
             }
-    except Exception:
+    except Exception as e:
+        print(f"[symptom_agent] JSON parsing error: {e} - Content: {response.content}")
         return {
             "specialty_needed": "General Physician",
             "symptoms": "General symptoms",
@@ -379,9 +379,16 @@ def _reverse_geocode(latitude: float, longitude: float) -> str | None:
     """
     try:
         import httpx
+
         resp = httpx.get(
             "https://nominatim.openstreetmap.org/reverse",
-            params={"lat": latitude, "lon": longitude, "format": "json", "zoom": 10, "accept-language": "en"},
+            params={
+                "lat": latitude,
+                "lon": longitude,
+                "format": "json",
+                "zoom": 10,
+                "accept-language": "en",
+            },
             headers={"User-Agent": "DocMatchAI/1.0"},
             timeout=5,
         )
@@ -416,7 +423,9 @@ async def search_agent(state: AgentState) -> dict:
     if latitude and longitude and not city:
         geocoded_city = _reverse_geocode(latitude, longitude)
         if geocoded_city:
-            print(f"[search_agent] Reverse geocoded: ({latitude},{longitude}) → {geocoded_city}")
+            print(
+                f"[search_agent] Reverse geocoded: ({latitude},{longitude}) → {geocoded_city}"
+            )
 
     # ── Step 2: Google Maps Places API ───────────────────────────────────────
     try:
@@ -443,15 +452,20 @@ async def search_agent(state: AgentState) -> dict:
 
         if data.get("status") == "OK":
             for place in data.get("results", [])[:8]:
-                clinics.append({
-                    "name": place.get("name"),
-                    "address": place.get("formatted_address") or place.get("vicinity"),
-                    "rating": place.get("rating"),
-                    "open_now": place.get("opening_hours", {}).get("open_now"),
-                    "source": "Google Maps",
-                })
+                clinics.append(
+                    {
+                        "name": place.get("name"),
+                        "address": place.get("formatted_address")
+                        or place.get("vicinity"),
+                        "rating": place.get("rating"),
+                        "open_now": place.get("opening_hours", {}).get("open_now"),
+                        "source": "Google Maps",
+                    }
+                )
         else:
-            print(f"[search_agent] Google Maps: {data.get('status')} — {data.get('error_message', '')}")
+            print(
+                f"[search_agent] Google Maps: {data.get('status')} — {data.get('error_message', '')}"
+            )
 
     except Exception as e:
         print(f"[search_agent] Google Maps exception: {e}")
@@ -461,21 +475,27 @@ async def search_agent(state: AgentState) -> dict:
         try:
             from tavily import TavilyClient
 
-            location_str = geocoded_city or city or (
-                f"near {latitude},{longitude}" if latitude else "nearby"
+            location_str = (
+                geocoded_city
+                or city
+                or (f"near {latitude},{longitude}" if latitude else "nearby")
             )
             query = f"best {specialty} clinics doctors in {location_str} address phone number"
             print(f"[search_agent] Tavily query: {query}")
             tavily = TavilyClient(api_key=settings.TAVILY_API_KEY)
-            results = tavily.search(query=query, search_depth="advanced").get("results", [])
+            results = tavily.search(query=query, search_depth="advanced").get(
+                "results", []
+            )
             for r in results[:5]:
-                clinics.append({
-                    "name": r.get("title"),
-                    "address": r.get("url"),
-                    "rating": None,
-                    "open_now": None,
-                    "source": "Tavily",
-                })
+                clinics.append(
+                    {
+                        "name": r.get("title"),
+                        "address": r.get("url"),
+                        "rating": None,
+                        "open_now": None,
+                        "source": "Tavily",
+                    }
+                )
         except Exception as e:
             print(f"[search_agent] Tavily error: {e}")
 
@@ -649,14 +669,12 @@ async def booking_agent(state: AgentState) -> dict:
 
     try:
         content = extract_resp.content.strip()
-        # Clean up markdown code blocks if present
-        if "```" in content:
-            content = content.split("```")[1]
-            if content.startswith("json"):
-                content = content[4:]
-            content = content.split("```")[0]
+        start = content.find("{")
+        end = content.rfind("}")
+        if start != -1 and end != -1:
+            content = content[start : end + 1]
 
-        new_data = json.loads(content.strip())
+        new_data = json.loads(content)
         current_booking.update(new_data)
     except Exception:
         pass
@@ -741,7 +759,6 @@ async def booking_agent(state: AgentState) -> dict:
                 "messages": [AIMessage(content=msg)],
                 "final_response": msg,
             }
-
 
     # ── Final Confirmation ────────────────────────────────────────────────────
     email_id = current_booking.get("email_id")
