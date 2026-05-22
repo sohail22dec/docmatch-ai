@@ -1,11 +1,11 @@
 """
-Run this script ONCE to update token.json with Gmail + Google Calendar scopes.
+Run this script ONCE to update token.json with Gmail scopes.
 
 Usage:
     python reauthorize_google.py
 
 This will open your browser → click Allow → a new token.json will be saved.
-After that, the backend can send emails AND read/write Google Calendar.
+After that, the backend can send emails.
 """
 import json
 import os
@@ -13,7 +13,6 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 
 SCOPES = [
     "https://mail.google.com/",
-    "https://www.googleapis.com/auth/calendar",
 ]
 
 CREDENTIALS_FILE = "credentials.json"
@@ -26,7 +25,7 @@ def main():
         return
 
     print("Opening browser for Google authorization...")
-    print("Please log in and click 'Allow' to grant Gmail + Calendar permissions.\n")
+    print("Please log in and click 'Allow' to grant Gmail permissions.\n")
 
     flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
     creds = flow.run_local_server(port=0)
@@ -44,7 +43,7 @@ def main():
     with open(TOKEN_FILE, "w") as f:
         json.dump(token_data, f, indent=2)
 
-    print(f"\n✅ Success! '{TOKEN_FILE}' has been updated with Gmail + Calendar scopes.")
+    print(f"\n✅ Success! '{TOKEN_FILE}' has been updated with Gmail scopes.")
     print("You can now restart the backend server.")
 
 

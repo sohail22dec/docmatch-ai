@@ -12,7 +12,6 @@ from app.agent.calendar_tools import (
     is_within_business_hours,
     check_admin_conflict,
     get_available_slots,
-    create_admin_event,
 )
 
 
@@ -936,15 +935,8 @@ Best regards,
     except Exception:
         pass
 
-    # ── Google Calendar Events ────────────────────────────────────────────────
-    calendar_status = ""
-    booking_with_id = {**booking, "booking_id": bid, "specialty": specialty}
-
-    admin_event_id = create_admin_event(booking_with_id, clinic)
-    if admin_event_id:
-        calendar_status += "📅 Appointment added to clinic calendar.\n"
-    else:
-        calendar_status += "⚠️ Could not add to clinic calendar.\n"
+    # ── Database Confirmation ────────────────────────────────────────────────
+    calendar_status = "📅 Appointment secured in our system.\n"
 
     confirmation_msg = f"""
 ---BOOKING_CONFIRMED---

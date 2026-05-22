@@ -1,16 +1,12 @@
 """
-Google Calendar utility functions for DocMatch AI booking system.
+Calendar utility functions for DocMatch AI booking system.
 
-Admin/Clinic Calendar — server-side (token.json). Tracks all bookings.
+Uses Supabase 'bookings' table to track slots and prevent double-booking.
 """
-import json
-import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
+from app.models.database import get_supabase_client
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -19,57 +15,6 @@ from googleapiclient.discovery import build
 
 BUSINESS_START_HOUR = 8   # 8:00 AM
 BUSINESS_END_HOUR = 17    # 5:00 PM
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Credential Loaders
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _get_admin_calendar_service():
-    """
-    Load server-side credentials from token.json (or env vars for Render).
-    Returns a Google Calendar API service object, or None on failure.
-    """
-    try:
-        token_json_str = os.environ.get("GOOGLE_TOKEN_JSON")
-        creds_json_str = os.environ.get("GOOGLE_CREDENTIALS_JSON")
-
-        if token_json_str:
-            token_data = json.loads(token_json_str)
-        elif os.path.exists("token.json"):
-            with open("token.json") as f:
-                token_data = json.load(f)
-        else:
-            return None
-
-        if creds_json_str:
-            creds_info = json.loads(creds_json_str)
-        elif os.path.exists("credentials.json"):
-            with open("credentials.json") as f:
-                creds_info = json.load(f)
-        else:
-            return None
-
-        client_info = creds_info.get("installed") or creds_info.get("web") or {}
-        creds = Credentials(
-            token=token_data.get("token"),
-            refresh_token=token_data.get("refresh_token"),
-            token_uri=token_data.get("token_uri", "https://oauth2.googleapis.com/token"),
-            client_id=client_info.get("client_id") or token_data.get("client_id"),
-            client_secret=client_info.get("client_secret") or token_data.get("client_secret"),
-            scopes=token_data.get("scopes", [
-                "https://mail.google.com/",
-                "https://www.googleapis.com/auth/calendar",
-            ]),
-        )
-
-        if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-
-        return build("calendar", "v3", credentials=creds)
-    except Exception as e:
-        print(f"[calendar] Failed to load admin calendar service: {e}")
-        return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -106,150 +51,86 @@ def is_within_business_hours(time_str: str) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Admin Calendar — Conflict & Slot Availability
+# Database — Conflict & Slot Availability
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_available_slots(date_str: str) -> list[str]:
     """
-    Check the admin calendar and return a list of free 1-hour slots
+    Check the database and return a list of free 1-hour slots
     between 8:00 AM and 5:00 PM on the given date (YYYY-MM-DD).
     """
-    service = _get_admin_calendar_service()
-    if not service:
-        # Fall back to all slots if calendar unavailable
-        return _all_slots()
-
     try:
-        date = datetime.strptime(date_str, "%Y-%m-%d")
-        day_start = date.replace(hour=BUSINESS_START_HOUR, minute=0, second=0).isoformat() + "Z"
-        day_end = date.replace(hour=BUSINESS_END_HOUR, minute=0, second=0).isoformat() + "Z"
-
-        events_result = service.events().list(
-            calendarId="primary",
-            timeMin=day_start,
-            timeMax=day_end,
-            singleEvents=True,
-            orderBy="startTime",
-        ).execute()
-
-        booked_times = set()
-        for event in events_result.get("items", []):
-            start = event.get("start", {}).get("dateTime", "")
-            if start:
-                try:
-                    event_time = datetime.fromisoformat(start.replace("Z", "+00:00"))
-                    booked_times.add(event_time.hour)
-                except Exception:
-                    pass
+        client = get_supabase_client()
+        # Query bookings table in Supabase for all active appointments on date_str
+        response = client.table("bookings").select("time_slot").eq("appointment_date", date_str).eq("status", "confirmed").execute()
+        
+        booked_slots = set()
+        if response.data:
+            for b in response.data:
+                ts = b.get("time_slot")
+                if ts:
+                    booked_slots.add(_normalize_time(ts))
 
         # Build list of free slots
         available = []
         for hour in range(BUSINESS_START_HOUR, BUSINESS_END_HOUR):
-            if hour not in booked_times:
-                slot_time = datetime(date.year, date.month, date.day, hour)
-                available.append(slot_time.strftime("%-I:%M %p"))
+            dt = datetime(2000, 1, 1, hour)
+            slot_name = dt.strftime("%-I:%M %p").upper()
+            if slot_name not in booked_slots:
+                # Keep formatting like '8:00 AM'
+                available.append(dt.strftime("%-I:%M %p"))
 
         return available
 
     except Exception as e:
-        print(f"[calendar] get_available_slots error: {e}")
+        print(f"[calendar] get_available_slots database fallback error: {e}")
         return _all_slots()
 
 
 def check_admin_conflict(date_str: str, time_str: str) -> bool:
     """
-    Returns True if the admin calendar already has an event
-    at the given date+time (within a 1-hour window).
+    Returns True if the database already has an event
+    at the given date+time.
     """
-    service = _get_admin_calendar_service()
-    if not service:
-        return False  # If calendar unavailable, don't block booking
-
     try:
-        slot_start = _parse_slot_datetime(date_str, time_str)
-        if not slot_start:
-            return False
-
-        slot_end = slot_start + timedelta(hours=1)
-        time_min = slot_start.isoformat() + "Z"
-        time_max = slot_end.isoformat() + "Z"
-
-        events_result = service.events().list(
-            calendarId="primary",
-            timeMin=time_min,
-            timeMax=time_max,
-            singleEvents=True,
-        ).execute()
-
-        return len(events_result.get("items", [])) > 0
+        client = get_supabase_client()
+        
+        response = client.table("bookings").select("time_slot").eq("appointment_date", date_str).eq("status", "confirmed").execute()
+        if response.data:
+            target = _normalize_time(time_str)
+            for b in response.data:
+                db_slot = b.get("time_slot")
+                if db_slot and _normalize_time(db_slot) == target:
+                    return True
+        return False
 
     except Exception as e:
-        print(f"[calendar] check_admin_conflict error: {e}")
+        print(f"[calendar] check_admin_conflict database fallback error: {e}")
         return False
 
 
 def create_admin_event(booking_data: dict, clinic: dict) -> Optional[str]:
     """
-    Creates a Google Calendar event on the admin calendar for the booking.
-    Returns the event ID on success, or None on failure.
+    Stub returning a mock ID since database insert is handled elsewhere.
     """
-    service = _get_admin_calendar_service()
-    if not service:
-        return None
-
-    try:
-        slot_start = _parse_slot_datetime(
-            booking_data.get("appointment_date", ""),
-            booking_data.get("time_slot", ""),
-        )
-        if not slot_start:
-            return None
-
-        slot_end = slot_start + timedelta(hours=1)
-        patient = booking_data.get("patient_name", "Patient")
-        doctor = clinic.get("name", "Clinic")
-        address = clinic.get("address", "")
-        specialty = booking_data.get("specialty", "")
-        bid = booking_data.get("booking_id", "")
-
-        event = {
-            "summary": f"Appointment — {patient} with {doctor}",
-            "location": address,
-            "description": (
-                f"Booking ID: {bid}\n"
-                f"Patient: {patient}\n"
-                f"Specialty: {specialty}\n"
-                f"Email: {booking_data.get('email_id', '')}\n"
-                f"Clinic: {doctor}\n"
-                f"Address: {address}"
-            ),
-            "start": {"dateTime": slot_start.isoformat(), "timeZone": "UTC"},
-            "end": {"dateTime": slot_end.isoformat(), "timeZone": "UTC"},
-        }
-
-        created = service.events().insert(calendarId="primary", body=event).execute()
-        return created.get("id")
-
-    except Exception as e:
-        print(f"[calendar] create_admin_event error: {e}")
-        return None
+    import random
+    return f"DB-EVT-{random.randint(1000, 9999)}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Internal Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _parse_slot_datetime(date_str: str, time_str: str) -> Optional[datetime]:
-    """Parses 'YYYY-MM-DD' + '10:00 AM' into a datetime object."""
-    time_str = time_str.strip().upper()
-    for fmt in ("%I:%M %p", "%I %p", "%H:%M"):
+def _normalize_time(t: str) -> str:
+    """Normalizes time string to %I:%M %p format for comparison."""
+    t = t.strip().upper()
+    for fmt in ("%I:%M %p", "%I %p", "%H:%M", "%H"):
         try:
-            t = datetime.strptime(time_str, fmt)
-            d = datetime.strptime(date_str, "%Y-%m-%d")
-            return d.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+            parsed = datetime.strptime(t, fmt)
+            return parsed.strftime("%I:%M %p").upper()
         except ValueError:
             continue
-    return None
+    return t
 
 
 def _all_slots() -> list[str]:
