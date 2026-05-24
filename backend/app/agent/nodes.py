@@ -200,6 +200,9 @@ async def orchestrator_node(state: AgentState) -> dict:
     # 4. Routing based on intent for other flows
     if "clinic_search" in intent:
         # clinic_search intent with no specialty yet → triage symptoms first
+        # IMPORTANT: Only route to symptom_agent if specialty is NOT already identified.
+        # If specialty is already in state (from a previous turn), skip symptom_agent
+        # to prevent the GPS message (📍) from resetting the specialty to General Physician.
         if specialty is None:
             return {"next": "symptom_agent"}
 
@@ -297,9 +300,10 @@ async def symptom_agent(state: AgentState) -> dict:
                 ),
             }
         else:
-            specialty = data.get("specialty", "General Physician")
+            specialty = data.get("specialty") or "General Physician"
             city = data.get("city")
-            symptoms_summary = data.get("symptoms_summary", "General symptoms")
+            # LLM may return null explicitly — use `or` to handle JSON null values
+            symptoms_summary = data.get("symptoms_summary") or "General symptoms"
 
             if "directly requested" in symptoms_summary.lower():
                 diag_msg = f"Got it! Based on your request, you should visit a **{specialty}**. Would you like me to help you find one nearby? 🩺"
@@ -318,14 +322,17 @@ async def symptom_agent(state: AgentState) -> dict:
             }
     except Exception as e:
         print(f"[symptom_agent] JSON parsing error: {e} - Content: {response.content}")
+        # IMPORTANT: Don't overwrite specialty_needed if it was already correctly set
+        # in a previous turn (e.g., user said 'find a dermatologist' and now sent GPS).
+        existing_specialty = state.get("specialty_needed")
         return {
-            "specialty_needed": "General Physician",
+            "specialty_needed": existing_specialty or "General Physician",
             "symptoms": "General symptoms",
             "messages": [
                 AIMessage(
                     content="I'm analyzing your symptoms. Let me find the right specialist for you."
                 )
-            ],
+            ] if not existing_specialty else [],
         }
 
 
@@ -932,8 +939,9 @@ Best regards,
             email_status = f"📧 Confirmation email sent to {recipient}!"
         else:
             pass
-    except Exception:
-        pass
+    except Exception as email_err:
+        print(f"[confirmation_agent] ⚠️ Email sending failed: {email_err}")
+        email_status = f"⚠️ Email could not be sent: {email_err}"
 
     # ── Database Confirmation ────────────────────────────────────────────────
     calendar_status = "📅 Appointment secured in our system.\n"
