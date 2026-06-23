@@ -23,6 +23,5 @@ dependencies = [
     "pydantic-settings>=2.14.0",
     "python-dotenv>=1.2.2",
     "supabase>=2.12.0",
-    "tavily-python>=0.7.23",
     "uvicorn[standard]>=0.44.0",
 ]

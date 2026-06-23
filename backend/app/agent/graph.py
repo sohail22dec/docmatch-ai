@@ -6,7 +6,6 @@ from app.agent.nodes import (
     location_agent,
     search_agent,
     formatter_agent,
-    general_qa_agent,
     booking_agent,
     confirmation_agent,
 )
@@ -15,7 +14,6 @@ from app.agent.nodes import (
 def route_from_orchestrator(state: AgentState) -> str:
     """Reads the 'next' key set by the orchestrator and returns it as a routing string."""
     next_node = state.get("next")
-    print(f"[DEBUG] route_from_orchestrator sees next: {next_node}")
     return next_node or END
 
 
@@ -31,7 +29,6 @@ async def build_medical_graph():
     workflow.add_node("location_agent", location_agent)
     workflow.add_node("search_agent", search_agent)
     workflow.add_node("formatter_agent", formatter_agent)
-    workflow.add_node("general_qa_agent", general_qa_agent)
     workflow.add_node("booking_agent", booking_agent)
     workflow.add_node("confirmation_agent", confirmation_agent)
 
@@ -47,7 +44,6 @@ async def build_medical_graph():
             "location_agent": "location_agent",
             "search_agent": "search_agent",
             "formatter_agent": "formatter_agent",
-            "general_qa_agent": "general_qa_agent",
             "booking_agent": "booking_agent",
             "confirmation_agent": "confirmation_agent",
             END: END,
@@ -59,7 +55,6 @@ async def build_medical_graph():
     workflow.add_edge("location_agent", "orchestrator")
     workflow.add_edge("search_agent", "orchestrator")
     workflow.add_edge("formatter_agent", "orchestrator")
-    workflow.add_edge("general_qa_agent", "orchestrator")
     workflow.add_edge("booking_agent", "orchestrator")
     workflow.add_edge("confirmation_agent", "orchestrator")
 

@@ -17,8 +17,6 @@ async def get_mcp_tools():
 
     # Environment variables for our tools
     env_vars = os.environ.copy()
-    if settings.TAVILY_API_KEY:
-        env_vars["TAVILY_API_KEY"] = settings.TAVILY_API_KEY
     if settings.GOOGLE_MAPS_API_KEY:
         env_vars["GOOGLE_MAPS_API_KEY"] = settings.GOOGLE_MAPS_API_KEY
 

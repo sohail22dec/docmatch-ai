@@ -7,7 +7,6 @@ class Settings(BaseSettings):
 
     # API Keys
     GROQ_API_KEY: str = ""
-    TAVILY_API_KEY: str = ""
     GOOGLE_MAPS_API_KEY: str = ""
 
     # Supabase

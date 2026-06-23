@@ -39,10 +39,7 @@ Look at the user's LATEST message and classify it into exactly one of these inte
    "Tomorrow at 10am", "john@example.com", "yes", "yes confirm", "ok", "sure", "sounds good",
    "correct", "that's right", "go ahead", "no", "cancel", "stop"
 
-3. "general_qa" - User is asking a question or seeking information about a doctor, a disease, or a clinic already discussed.
-   Examples: "where is his clinic?", "what is Dr. X's phone number?", "what are the symptoms of diabetes?", "tell me more about this doctor"
-
-Respond with ONLY one word: clinic_search, booking_request, OR general_qa
+Respond with ONLY one word: clinic_search OR booking_request
 """
 
 
@@ -131,23 +128,7 @@ async def orchestrator_node(state: AgentState) -> dict:
         )
         intent = intent_resp.content.strip().lower()
 
-        # Detect if the user is genuinely asking a question
-        question_words = [
-            "what",
-            "where",
-            "when",
-            "how",
-            "why",
-            "who",
-            "which",
-            "can you",
-            "could you",
-            "is there",
-            "do you",
-            "does",
-            "?",
-        ]
-        is_a_question = any(w in latest_user_msg.lower() for w in question_words)
+
 
         # Fast-path: simple confirmation/cancellation words always go to booking_agent during active booking
         confirmation_words = [
@@ -170,11 +151,7 @@ async def orchestrator_node(state: AgentState) -> dict:
         if selected_clinic and not booking_confirmed and is_simple_answer:
             return {"next": "booking_agent"}
 
-        # 1. General QA: only interrupt an active booking if the message is actually a question
-        if "general_qa" in intent:
-            if selected_clinic and not booking_confirmed and not is_a_question:
-                return {"next": "booking_agent"}
-            return {"next": "general_qa_agent"}
+
 
         # 2. Explicit booking request or info provision
         if "booking_request" in intent:
@@ -192,35 +169,22 @@ async def orchestrator_node(state: AgentState) -> dict:
                     }
             return {"next": "booking_agent"}
 
-    # 3. PRIORITIZE BOOKING FLOW (Sticky Lock)
-    # If a clinic is selected and no intent matched above, stay in booking mode.
     if selected_clinic and not booking_confirmed:
         return {"next": "booking_agent"}
 
-    # 4. Routing based on intent for other flows
     if "clinic_search" in intent:
-        # clinic_search intent with no specialty yet → triage symptoms first
-        # IMPORTANT: Only route to symptom_agent if specialty is NOT already identified.
-        # If specialty is already in state (from a previous turn), skip symptom_agent
-        # to prevent the GPS message (📍) from resetting the specialty to General Physician.
         if specialty is None:
             return {"next": "symptom_agent"}
 
-    # specialty is known and intent is clinic_search (or no explicit intent) → run state machine
-
-    # location_agent: latitude and city are both missing
     if latitude is None and not city:
         return {"next": "location_agent"}
 
-    # search_agent: haven't searched yet
     if clinics is None and not searched:
         return {"next": "search_agent"}
 
-    # formatter_agent: clinics found but not yet presented
     if clinics is not None and selected_clinic is None:
         return {"next": "formatter_agent"}
 
-    # confirmation_agent: booking is confirmed
     if booking_confirmed:
         return {"next": "confirmation_agent"}
 
@@ -413,9 +377,8 @@ def _reverse_geocode(latitude: float, longitude: float) -> str | None:
 
 async def search_agent(state: AgentState) -> dict:
     """
-    Searches for clinics using a 2-step fallback chain:
+    Searches for clinics using:
     1. Google Maps Places API (lat/lng or city) — best results, requires billing
-    2. Tavily web search — uses actual city name reverse-geocoded from GPS coordinates
     """
     specialty = state.get("specialty_needed", "doctor")
     latitude = state.get("latitude")
@@ -475,35 +438,6 @@ async def search_agent(state: AgentState) -> dict:
 
     except Exception as e:
         print(f"[search_agent] Google Maps exception: {e}")
-
-    # ── Step 3: Tavily web search (uses real city name from reverse geocoding) ─
-    if not clinics:
-        try:
-            from tavily import TavilyClient
-
-            location_str = (
-                geocoded_city
-                or city
-                or (f"near {latitude},{longitude}" if latitude else "nearby")
-            )
-            query = f"best {specialty} clinics doctors in {location_str} address phone number"
-            print(f"[search_agent] Tavily query: {query}")
-            tavily = TavilyClient(api_key=settings.TAVILY_API_KEY)
-            results = tavily.search(query=query, search_depth="advanced").get(
-                "results", []
-            )
-            for r in results[:5]:
-                clinics.append(
-                    {
-                        "name": r.get("title"),
-                        "address": r.get("url"),
-                        "rating": None,
-                        "open_now": None,
-                        "source": "Tavily",
-                    }
-                )
-        except Exception as e:
-            print(f"[search_agent] Tavily error: {e}")
 
     return {
         "clinics_found": clinics,
@@ -965,80 +899,4 @@ TIME: {booking.get("time_slot")}
     return {
         "messages": [AIMessage(content=confirmation_msg)],
         "final_response": confirmation_msg,
-    }
-
-
-# ---------------------------------------------------------------------------
-# GENERAL QA AGENT
-# ---------------------------------------------------------------------------
-
-GENERAL_QA_PROMPT = """You are a concise, helpful medical assistant for DocMatch AI.
-Answer the user's question clearly and directly using the search results provided.
-
-CRITICAL RULES:
-- NEVER guess or say "likely" if you have search results. Use the facts.
-- If the user is asking "where" or for "address", provide the specific location from the search results.
-- LOCATION AWARENESS: If the user's current city is provided in the context, and the doctor/clinic you found is in a DIFFERENT city, you MUST inform the user and offer to help them find a different specialist closer to them.
-- Example: "Dr. Smith is in Kolkata. Since you are in Balurghat, would you like me to find a cardiologist closer to you?"
-- NEVER correct the user's grammar.
-- Be short and to the point.
-
-CONTEXT:
-- User Current City: {city}
-- Needed Specialty: {specialty}
-"""
-
-
-async def general_qa_agent(state: AgentState) -> dict:
-    """
-    Handles general questions using Tavily for live web search.
-    Generates a optimized search query based on conversation history.
-    """
-    messages = state.get("messages", [])
-    city = state.get("city") or "Unknown"
-    specialty = state.get("specialty_needed") or "General Physician"
-
-    # 1. Generate an optimized search query using LLM
-    llm = _get_llm(temperature=0)
-    query_gen_prompt = "Based on the following conversation, generate a short, effective Google search query to answer the user's latest question. Respond with ONLY the query text."
-
-    recent_messages = messages[-4:] if len(messages) > 4 else messages
-    query_resp = await llm.ainvoke(
-        [SystemMessage(content=query_gen_prompt)] + recent_messages
-    )
-    search_query = query_resp.content.strip().replace('"', "")
-
-    # 2. Execute Tavily search
-    search_context = ""
-    try:
-        from tavily import TavilyClient
-
-        client = TavilyClient(api_key=settings.TAVILY_API_KEY)
-        results = client.search(query=search_query, search_depth="advanced").get(
-            "results", []
-        )
-        if results:
-            snippets = [f"- {r.get('title')}: {r.get('content')}" for r in results[:5]]
-            search_context = "Web search results:\n" + "\n".join(snippets)
-    except Exception:
-        pass
-
-    # 3. Generate final answer
-    prompt_messages = [
-        SystemMessage(content=GENERAL_QA_PROMPT.format(city=city, specialty=specialty))
-    ]
-    prompt_messages.extend(recent_messages)
-
-    if search_context:
-        prompt_messages.append(
-            HumanMessage(
-                content=f"{search_context}\n\nAnswer the user's latest question using these facts."
-            )
-        )
-
-    response = await llm.ainvoke(prompt_messages)
-
-    return {
-        "messages": [AIMessage(content=response.content)],
-        "final_response": response.content,
     }

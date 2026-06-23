@@ -2,7 +2,6 @@ import os
 import sys
 import httpx
 from fastmcp import FastMCP
-from tavily import TavilyClient
 
 # Ensure we can import from app
 sys.path.append(
@@ -12,41 +11,6 @@ from app.core.config import settings
 
 # Initialize FastMCP
 mcp = FastMCP("Medical Tools Server")
-
-
-@mcp.tool()
-def search_medical_web(query: str, search_depth: str = "advanced") -> str:
-    """
-    Searches the web for medical literature, symptoms, or general medical information.
-    Uses the Tavily search API.
-
-    Args:
-        query: The search query (e.g., "symptoms of strep throat" or "latest treatments for type 2 diabetes").
-        search_depth: "basic" for quick answers, "advanced" for deep research. Defaults to "advanced".
-
-    Returns:
-        A string containing the summarized search results.
-    """
-    if not settings.TAVILY_API_KEY:
-        return "Error: TAVILY_API_KEY is not configured in the environment."
-
-    try:
-        client = TavilyClient(api_key=settings.TAVILY_API_KEY)
-        response = client.search(query=query, search_depth=search_depth)
-
-        results = response.get("results", [])
-        if not results:
-            return "No relevant medical information found."
-
-        formatted_results = [f"Search Results for '{query}':"]
-        for i, res in enumerate(results):
-            formatted_results.append(
-                f"{i + 1}. {res.get('title')}\n   {res.get('content')}\n   Source: {res.get('url')}"
-            )
-
-        return "\n\n".join(formatted_results)
-    except Exception as e:
-        return f"Error occurred during web search: {str(e)}"
 
 
 @mcp.tool()
