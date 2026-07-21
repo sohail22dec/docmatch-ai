@@ -26,6 +26,7 @@ const ChatInput = dynamic(() => import("./ChatInput"), {
 type Message = {
   role: "user" | "assistant";
   content: string;
+  search_results?: any[];
 };
 
 type Session = {
@@ -257,7 +258,11 @@ export default function ChatLayout() {
 
       const responseMessages: Message[] = [
         ...newMessages,
-        { role: "assistant", content: data.response },
+        {
+          role: "assistant",
+          content: data.response,
+          search_results: data.search_results || undefined,
+        },
       ];
       setMessages(responseMessages);
 
