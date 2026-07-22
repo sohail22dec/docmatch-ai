@@ -6,6 +6,7 @@ import { Bot, Stethoscope, MapPin, Star, ExternalLink, CheckCircle } from "lucid
 type Message = {
   role: "user" | "assistant";
   content: string;
+  search_results?: any[];
 };
 
 interface ChatAreaProps {
@@ -92,6 +93,7 @@ export default function ChatArea({
             key={idx}
             role={msg.role}
             content={msg.content}
+            searchResults={msg.search_results}
             onBookAppointment={onBookAppointment}
           />
         ))}
@@ -342,33 +344,17 @@ function ClinicCard({
 function MessageRow({
   role,
   content,
+  searchResults,
   onBookAppointment,
 }: {
   role: string;
   content: string;
+  searchResults?: any[];
   onBookAppointment: (clinic: any) => void;
 }) {
   const isUser = role === "user";
 
-  // 1. Parse Clinic blocks
-  const clinicParts = content.split(/---CLINIC---/);
-  const clinicIntro = clinicParts[0].trim();
-
-  const clinics = clinicParts.slice(1).map((p) => {
-    const [data, rest] = p.split(/---END---/);
-    const nameMatch = data.match(/NAME:\s*(.*)/);
-    const ratingMatch = data.match(/RATING:\s*(.*)/);
-    const addressMatch = data.match(/ADDRESS:\s*(.*)/);
-
-    return {
-      name: nameMatch?.[1] || "",
-      rating: ratingMatch?.[1] || "",
-      address: addressMatch?.[1] || "",
-      afterText: rest || "",
-    };
-  });
-
-  // 2. Parse Booking Confirmation blocks
+  // Parse Booking Confirmation blocks
   const bookingParts = content.split(/---BOOKING_CONFIRMED---/);
   const bookingIntro = bookingParts[0].trim();
 
@@ -396,15 +382,11 @@ function MessageRow({
     };
   });
 
-  // Determine if this is a clinic message or a booking message
-  const hasClinics = clinics.length > 0;
   const hasBookings = bookings.length > 0;
-  const introText = hasBookings ? bookingIntro : clinicIntro;
-  const finalText = hasBookings
-    ? bookings[bookings.length - 1].afterText
-    : hasClinics
-      ? clinics[clinics.length - 1].afterText
-      : "";
+  const hasSearchResults = searchResults && searchResults.length > 0;
+
+  const introText = hasBookings ? bookingIntro : content;
+  const finalText = hasBookings ? bookings[bookings.length - 1].afterText : "";
 
   return (
     <div className="flex gap-3 md:gap-4">
@@ -442,7 +424,7 @@ function MessageRow({
             <div className="whitespace-pre-wrap mb-3">{introText}</div>
           )}
 
-          {hasClinics && (
+          {hasSearchResults && (
             <div
               className="my-2 md:my-3 rounded-xl border px-3 md:px-4 py-1 shadow-sm"
               style={{
@@ -450,11 +432,11 @@ function MessageRow({
                 borderColor: "var(--border-color)",
               }}
             >
-              {clinics.map((clinic, i) => (
+              {searchResults.map((clinic: any, i: number) => (
                 <ClinicCard
                   key={i}
                   name={clinic.name}
-                  rating={clinic.rating}
+                  rating={clinic.rating != null ? String(clinic.rating) : "N/A"}
                   address={clinic.address}
                   onBook={() => onBookAppointment(clinic)}
                 />

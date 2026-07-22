@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Optional, List
+from app.services.google_maps_models import Clinic
 
 
 class Doctor(BaseModel):
@@ -66,3 +67,5 @@ class ChatResponse(BaseModel):
     # Auth / usage limit
     limit_reached: Optional[bool] = False
     message_count: Optional[int] = None
+    # Search results
+    search_results: Optional[List[Clinic]] = None

@@ -13,6 +13,7 @@ from app.models.crud import (
     get_user_message_count,
     link_anonymous_sessions,
 )
+from app.planner import PlannerState
 
 router = APIRouter()
 
@@ -74,6 +75,7 @@ def link_sessions_endpoint(payload: dict):
         raise HTTPException(status_code=500, detail=f"Failed to link sessions: {str(e)}")
 
 
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(
     request: Request,
@@ -81,11 +83,7 @@ async def chat_endpoint(
     current_user: dict = Depends(get_current_user),
 ):
     """
-    Accepts a new message + optional location data, saves to Supabase,
-    runs the multi-agent LangGraph, and saves the AI response.
-
-    - Requires a valid Supabase JWT (anonymous or authenticated).
-    - Enforces a 5-message limit per session for anonymous users.
+    DocMatch endpoint — Planner + Medical Capability architecture.
     """
     try:
         graph = getattr(request.app.state, "graph", None)
@@ -95,16 +93,13 @@ async def chat_endpoint(
         if not chat_request.messages:
             raise HTTPException(status_code=400, detail="No messages provided.")
 
-        # Extract user identity from verified JWT
-        # Supabase sets role="anon" for anonymous sessions, "authenticated" for real users
+        # Auth + identity
         token_user_id = current_user.get("sub")
-        user_role = current_user.get("role", "anon")  # "anon" or "authenticated"
+        user_role = current_user.get("role", "anon")
         is_anonymous = user_role == "anon"
-
-        # Use the token's user_id (more secure than trusting client-sent user_id)
         user_id = token_user_id or chat_request.user_id
 
-        # 1. Manage Session
+        # Session management
         session_id = chat_request.session_id
         newest_user_message = chat_request.messages[-1]
 
@@ -116,12 +111,10 @@ async def chat_endpoint(
             )
             new_session = create_session(title, user_id)
             if not new_session:
-                raise HTTPException(
-                    status_code=500, detail="Failed to create new session."
-                )
+                raise HTTPException(status_code=500, detail="Failed to create new session.")
             session_id = new_session["id"]
 
-        # 2. Check anonymous message limit BEFORE saving the message
+        # Anonymous message limit
         message_count = 0
         limit_reached = False
         if is_anonymous and session_id:
@@ -129,14 +122,12 @@ async def chat_endpoint(
             if message_count >= ANON_MESSAGE_LIMIT:
                 limit_reached = True
 
-        # 3. Save user message to DB
+        # Persist user message
         add_message(session_id, "user", newest_user_message.content)
-        message_count += 1  # Reflect the message we just added
+        message_count += 1
 
-        # 4. Fetch full message history from DB
+        # Fetch full history and convert to LangChain messages
         db_messages = get_messages(session_id)
-
-        # 5. Convert to LangChain message objects
         lc_messages = []
         for msg in db_messages:
             if msg["role"] == "user":
@@ -144,63 +135,45 @@ async def chat_endpoint(
             elif msg["role"] == "assistant":
                 lc_messages.append(AIMessage(content=msg["content"]))
 
-        # 6. Build initial state
-        state = {
+        # Build initial graph state.
+        initial_state = {
             "messages": lc_messages,
-            "user_id": user_id,
-            "latitude": chat_request.latitude,
-            "longitude": chat_request.longitude,
-            "city": chat_request.city,
-            "location_denied": chat_request.location_denied,
-            "clinics_found": None,
-            "search_attempted": False,
+            "planner_state": PlannerState().model_dump(),
+            "planner_decision": None,
+            "medical_decision": None,
             "final_response": None,
-            "specialty_needed": chat_request.specialty_needed,
-            "symptoms": None,
-            "selected_clinic": chat_request.selected_clinic,
-            "current_booking": chat_request.current_booking,
-            "booking_confirmed": chat_request.booking_confirmed,
-            "booking_id": chat_request.booking_id,
-            "action_required": None,
-            "next": None,
-            "google_calendar_token": chat_request.google_calendar_token,
         }
 
-        # 7. Run the multi-agent graph
-        final_state = await graph.ainvoke(state, config={"recursion_limit": 20})
+        # Run the graph
+        final_state = await graph.ainvoke(
+            initial_state, config={"recursion_limit": 10}
+        )
 
-        # 8. Extract the last AI message
-        final_message = None
-        msgs = final_state.get("messages", [])
-        for msg in reversed(msgs):
-            if isinstance(msg, AIMessage) or (
-                hasattr(msg, "type") and msg.type == "ai"
-            ):
-                final_message = msg
-                break
+        # Output sets final_response explicitly
+        response_text = final_state.get("final_response") or (
+            "I'm here to help you find the right doctor. "
+            "Could you describe your symptoms?"
+        )
 
-        if not final_message:
-            print(
-                "[chat_endpoint] WARNING: No AI message found in state. Falling back to default."
-            )
-            final_message = AIMessage(
-                content="I've processed your request, but I'm not sure how to respond. How else can I help you?"
-            )
+        # Persist AI response
+        add_message(session_id, "assistant", response_text)
 
-        # 9. Save AI response to DB
-        add_message(session_id, "assistant", final_message.content)
+        # Extract search results and specialty for frontend compatibility
+        search_results = final_state.get("search_results")
+        medical_decision_data = final_state.get("medical_decision") or {}
+        specialty_needed = (
+            medical_decision_data.get("specialty")
+            if medical_decision_data.get("status") == "diagnosed"
+            else None
+        )
 
         return ChatResponse(
-            response=final_message.content,
+            response=response_text,
             session_id=session_id,
-            action=final_state.get("action_required"),
-            selected_clinic=final_state.get("selected_clinic"),
-            current_booking=final_state.get("current_booking"),
-            booking_confirmed=final_state.get("booking_confirmed"),
-            booking_id=final_state.get("booking_id"),
-            specialty_needed=final_state.get("specialty_needed"),
+            specialty_needed=specialty_needed,
             limit_reached=limit_reached,
             message_count=message_count,
+            search_results=search_results,
         )
 
     except HTTPException as he:
