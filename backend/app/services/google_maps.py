@@ -22,21 +22,34 @@ class GoogleMapsService:
     async def search_clinics(
         self,
         specialty: str,
-        city: str,
+        city: Optional[str] = None,
+        latitude: Optional[float] = None,
+        longitude: Optional[float] = None,
     ) -> list[Clinic]:
         """
-        Searches for up to 10 medical clinics/specialists matching `specialty` in `city`.
+        Searches for up to 10 medical clinics/specialists matching `specialty`.
+        Supports explicit `city` or `latitude`/`longitude` coordinate queries.
         Returns a list of structured `Clinic` objects.
         """
         if not self.api_key:
             logger.warning("GOOGLE_MAPS_API_KEY is not configured in environment.")
             return []
 
-        query = f"{specialty} in {city}"
-        params = {
-            "query": query,
-            "key": self.api_key,
-        }
+        if latitude is not None and longitude is not None:
+            query = f"{specialty} clinic"
+            params = {
+                "query": query,
+                "location": f"{latitude},{longitude}",
+                "radius": "10000",
+                "key": self.api_key,
+            }
+        else:
+            city_name = city or "nearby"
+            query = f"{specialty} in {city_name}"
+            params = {
+                "query": query,
+                "key": self.api_key,
+            }
 
         try:
             async with httpx.AsyncClient() as client:

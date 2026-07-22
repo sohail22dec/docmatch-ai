@@ -1,19 +1,3 @@
-"""
-state.py — Application state for DocMatch.
-
-This is NOT PlannerState. This is NOT MedicalDecision.
-This is the data bag that flows through the LangGraph.
-
-Fields are kept minimal — only what the three nodes (planner, medical,
-response) actually need. No booking fields, no location fields, no
-routing flags.
-
-PlannerState is stored directly (as a serialised dict) rather than
-being reconstructed on each planner invocation. Each capability node
-that produces planning-relevant output updates planner_state explicitly.
-This makes the planning signals the single source of truth.
-"""
-
 from typing import Annotated, Optional
 from typing_extensions import TypedDict
 from langgraph.graph.message import add_messages
@@ -42,5 +26,22 @@ class AgentState(TypedDict):
     # Written by search_node. Read by response_node.
     search_results: Optional[list[dict]]
 
+    # Most recent clinic results restored from the session.
+    # Read by clinic_selection_node; not rendered as a fresh search response.
+    previous_search_results: Optional[list[dict]]
+
+    # Clinic selected explicitly by the client, e.g. via a search result card.
+    selected_clinic_request: Optional[dict]
+
     # Final user-facing text. Written by response_node. Read by the API.
     final_response: Optional[str]
+
+    # Explicit workflow signal for capability chaining (e.g. 'search', 'response').
+    next_capability: Optional[str]
+
+    # Booking payload & result for graph-triggered booking capability
+    booking_request: Optional[dict]
+    booking_result: Optional[dict]
+
+    # Explicit frontend client action (e.g. 'request_current_location')
+    action: Optional[str]

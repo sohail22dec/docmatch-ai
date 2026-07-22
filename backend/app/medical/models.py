@@ -21,6 +21,7 @@ class MedicalDecision(BaseModel):
     status: MedicalStatus
     specialty: Optional[str] = None
     symptoms_summary: Optional[str] = None
+    location_type: Optional[str] = None
     city: Optional[str] = None
     is_direct_request: bool = False
     clarification_question: Optional[str] = None

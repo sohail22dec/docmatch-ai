@@ -44,17 +44,18 @@ def get_messages(session_id: str, limit: int = 15):
         .execute()
     )
     
-    # 2. Reverse them so they are back in CHRONOLOGICAL order for the AI
+    # 2. Reverse them so they are back in CHRONOLOGICAL order
     messages = response.data
     messages.reverse()
-    
     return messages
 
 
-def add_message(session_id: str, role: str, content: str):
-    """Adds a single message to a session."""
+def add_message(session_id: str, role: str, content: str, metadata: dict = None):
+    """Adds a single message to a session with optional metadata."""
     client = get_supabase_client()
     data = {"session_id": session_id, "role": role, "content": content}
+    if metadata is not None:
+        data["metadata"] = metadata
     response = client.table("chat_messages").insert(data).execute()
     if response.data:
         return response.data[0]
