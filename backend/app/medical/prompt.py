@@ -37,7 +37,7 @@ OUTPUT RULES — READ CAREFULLY:
 
 ───────────────────────────────────────
 FORMAT A — Specialty identified:
-{{"status": "diagnosed", "specialty": "<value from AVAILABLE SPECIALTIES>", "symptoms_summary": "<one-sentence neutral summary>", "city": "<city name or null>", "is_direct_request": <true or false>}}
+{{"status": "diagnosed", "specialty": "<value from AVAILABLE SPECIALTIES>", "symptoms_summary": "<one-sentence neutral summary>", "location_type": "<city, current_location, or unknown>", "city": "<city name or null>", "is_direct_request": <true or false>}}
 
 FORMAT B — Need one more piece of information:
 {{"status": "clarifying", "clarification_question": "<your single focused question>"}}
@@ -60,8 +60,13 @@ IS_DIRECT_REQUEST RULE:
 • Set "is_direct_request" to true if the user directly requested a specific type of doctor or specialty (e.g. "Find a dermatologist", "I need a cardiologist").
 • Set "is_direct_request" to false if you inferred the specialty from symptoms described by the user (e.g. "I have chest pain", "Severe toothache").
 
+LOCATION_TYPE RULE:
+• Set "location_type" to "current_location" if the user mentions "near me", "nearby", "around me", "close to me", etc.
+• Set "location_type" to "city" if the user names a specific city or locality (e.g. "in Balurghat", "in Kolkata").
+• Set "location_type" to "unknown" if no location or city is specified.
+
 CITY RULE:
-• Set "city" only when the user explicitly names a city in their message.
+• Set "city" only when location_type is "city" and the user explicitly names a city in their message.
 • Do NOT infer city from country names, landmarks, or context.
 • Set "city" to null if no city is explicitly mentioned.
 

@@ -4,21 +4,34 @@ from .state import PlannerState, SearchStatus
 
 class Planner:
 
-    def decide(self, state: PlannerState) -> PlannerDecision:
+    def decide(self, state: PlannerState, medical_decision: dict | None = None) -> PlannerDecision:
 
         # Rules are evaluated in the order a real booking conversation unfolds.
 
         if state.booking_completed:
             return PlannerDecision(capability=Capability.COMPLETE)
 
-        if not state.specialty_known:
+        # If medical capability has already run on this turn, handle its status
+        if medical_decision:
+            status = medical_decision.get("status")
+            if status == "clarifying":
+                return PlannerDecision(capability=Capability.RESPONSE)
+            if status == "diagnosed":
+                if not state.location_known:
+                    return PlannerDecision(
+                        capability=Capability.RESPONSE,
+                        missing_info=[MissingInfo.LOCATION],
+                    )
+                # Both specialty and location are known, transition to Search
+                if state.search_status == SearchStatus.NOT_ATTEMPTED:
+                    return PlannerDecision(capability=Capability.SEARCH)
+
+        # First pass of the request
+        if not state.specialty_known or not state.location_known:
             return PlannerDecision(capability=Capability.MEDICAL)
 
-        if not state.location_known:
-            return PlannerDecision(
-                capability=Capability.RESPONSE,
-                missing_info=[MissingInfo.LOCATION],
-            )
+        if state.search_status == SearchStatus.AWAITING_LOCATION:
+            return PlannerDecision(capability=Capability.RESPONSE)
 
         if state.search_status == SearchStatus.NOT_ATTEMPTED:
             return PlannerDecision(capability=Capability.SEARCH)

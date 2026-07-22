@@ -3,11 +3,7 @@
 import { useRef, useEffect } from "react";
 import { Bot, Stethoscope, MapPin, Star, ExternalLink, CheckCircle } from "lucide-react";
 
-type Message = {
-  role: "user" | "assistant";
-  content: string;
-  search_results?: any[];
-};
+import type { Message, MessageMetadata, Clinic } from "./types";
 
 interface ChatAreaProps {
   messages: Message[];
@@ -93,7 +89,7 @@ export default function ChatArea({
             key={idx}
             role={msg.role}
             content={msg.content}
-            searchResults={msg.search_results}
+            metadata={msg.metadata}
             onBookAppointment={onBookAppointment}
           />
         ))}
@@ -344,12 +340,12 @@ function ClinicCard({
 function MessageRow({
   role,
   content,
-  searchResults,
+  metadata,
   onBookAppointment,
 }: {
   role: string;
   content: string;
-  searchResults?: any[];
+  metadata?: MessageMetadata;
   onBookAppointment: (clinic: any) => void;
 }) {
   const isUser = role === "user";
@@ -383,7 +379,8 @@ function MessageRow({
   });
 
   const hasBookings = bookings.length > 0;
-  const hasSearchResults = searchResults && searchResults.length > 0;
+  const clinics = metadata?.clinics;
+  const hasClinics = clinics && clinics.length > 0;
 
   const introText = hasBookings ? bookingIntro : content;
   const finalText = hasBookings ? bookings[bookings.length - 1].afterText : "";
@@ -396,13 +393,13 @@ function MessageRow({
         style={
           isUser
             ? {
-                background: "var(--accent)",
-                color: "var(--text-on-accent)",
-              }
+              background: "var(--accent)",
+              color: "var(--text-on-accent)",
+            }
             : {
-                background: "var(--bg-secondary)",
-                color: "var(--accent)",
-              }
+              background: "var(--bg-secondary)",
+              color: "var(--accent)",
+            }
         }
       >
         {isUser ? "U" : <Bot size={18} />}
@@ -424,7 +421,7 @@ function MessageRow({
             <div className="whitespace-pre-wrap mb-3">{introText}</div>
           )}
 
-          {hasSearchResults && (
+          {hasClinics && (
             <div
               className="my-2 md:my-3 rounded-xl border px-3 md:px-4 py-1 shadow-sm"
               style={{
@@ -432,7 +429,7 @@ function MessageRow({
                 borderColor: "var(--border-color)",
               }}
             >
-              {searchResults.map((clinic: any, i: number) => (
+              {clinics.map((clinic: Clinic, i: number) => (
                 <ClinicCard
                   key={i}
                   name={clinic.name}

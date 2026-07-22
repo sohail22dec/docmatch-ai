@@ -67,5 +67,6 @@ class ChatResponse(BaseModel):
     # Auth / usage limit
     limit_reached: Optional[bool] = False
     message_count: Optional[int] = None
-    # Search results
-    search_results: Optional[List[Clinic]] = None
+    # Search results & metadata
+    clinics: Optional[List[Clinic]] = None
+    metadata: Optional[dict] = None

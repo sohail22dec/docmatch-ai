@@ -7,6 +7,7 @@ import Sidebar from "./Sidebar";
 import ChatHeader from "./ChatHeader";
 import ChatArea from "./ChatArea";
 import AuthModal from "../auth/AuthModal";
+import BookingModal from "./BookingModal";
 import {
   getOrCreateAnonSession,
   getAuthToken,
@@ -23,11 +24,7 @@ const ChatInput = dynamic(() => import("./ChatInput"), {
   ),
 });
 
-type Message = {
-  role: "user" | "assistant";
-  content: string;
-  search_results?: any[];
-};
+import type { Message } from "./types";
 
 type Session = {
   id: string;
@@ -58,6 +55,7 @@ export default function ChatLayout() {
   const [currentBooking, setCurrentBooking] = useState<any>(null);
   const [bookingConfirmed, setBookingConfirmed] = useState(false);
   const [bookingId, setBookingId] = useState<string | null>(null);
+  const [showBookingModal, setShowBookingModal] = useState(false);
 
   // ── Auth state ───────────────────────────────────────────────────────────
   const [user, setUser] = useState<User | null>(null);
@@ -177,6 +175,7 @@ export default function ChatLayout() {
           data.messages.map((msg: any) => ({
             role: msg.role,
             content: msg.content,
+            metadata: msg.metadata || (msg.clinics ? { clinics: msg.clinics } : undefined),
           }))
         );
         if (isMobile) setIsSidebarOpen(false);
@@ -256,14 +255,22 @@ export default function ChatLayout() {
 
       const data = await response.json();
 
-      const responseMessages: Message[] = [
-        ...newMessages,
-        {
-          role: "assistant",
-          content: data.response,
-          search_results: data.search_results || undefined,
-        },
-      ];
+      const metadata = data.metadata || (data.clinics ? { clinics: data.clinics } : undefined);
+      let responseMessages = newMessages;
+
+      if (data.action === "open_booking_form" && data.selected_clinic) {
+        setSelectedClinic(data.selected_clinic);
+        setShowBookingModal(true);
+      } else {
+        responseMessages = [
+          ...newMessages,
+          {
+            role: "assistant",
+            content: data.response,
+            metadata: metadata,
+          },
+        ];
+      }
       setMessages(responseMessages);
 
       // Update booking state
@@ -281,7 +288,8 @@ export default function ChatLayout() {
         setShowAuthModal(true);
       }
 
-      const isLocationPending = data.action === "request_location" && !latToSend;
+      const isLocationPending =
+        (data.action === "request_current_location" || data.action === "request_location") && !latToSend;
 
       if (!currentSessionId && data.session_id) {
         setCurrentSessionId(data.session_id);
@@ -289,33 +297,58 @@ export default function ChatLayout() {
       }
 
       if (isLocationPending) {
-        if (navigator.geolocation) {
+        const activeSessionId = data.session_id || currentSessionId;
+        if (navigator.geolocation && activeSessionId) {
           setIsLoading(true);
           setIsWaitingForLocation(true);
-          const resolvedSessionId = data.session_id || currentSessionId;
-          navigator.geolocation.getCurrentPosition(
-            (pos) => {
-              const coords = {
-                lat: pos.coords.latitude,
-                lng: pos.coords.longitude,
-              };
-              setLocation(coords);
-              setIsWaitingForLocation(false);
-              sendMessage(
-                "📍 Here is my current location.",
-                coords,
-                undefined,
-                responseMessages,
-                data.specialty_needed,
-                resolvedSessionId
-              );
-              fetchSessions(userIdRef.current);
-            },
-            (err) => {
-              console.warn("Location permission denied:", err);
+
+          const sendLocationPayload = async (lat: number | null, lng: number | null) => {
+            try {
+              const token = getAuthToken();
+              const locRes = await fetch(`${API_BASE_URL}/api/chat/location`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                },
+                body: JSON.stringify({
+                  session_id: activeSessionId,
+                  latitude: lat,
+                  longitude: lng,
+                }),
+              });
+
+              if (locRes.ok) {
+                const locData = await locRes.json();
+                if (locData.response) {
+                  setMessages((current) => [
+                    ...current,
+                    {
+                      role: "assistant",
+                      content: locData.response,
+                      metadata: locData.metadata,
+                    },
+                  ]);
+                }
+              }
+            } catch (err) {
+              console.error("Location submission error:", err);
+            } finally {
               setIsWaitingForLocation(false);
               setIsLoading(false);
               fetchSessions(userIdRef.current);
+            }
+          };
+
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+              setLocation(coords);
+              sendLocationPayload(coords.lat, coords.lng);
+            },
+            (err) => {
+              console.warn("Location permission denied or unavailable:", err);
+              sendLocationPayload(null, null);
             }
           );
         }
@@ -340,7 +373,8 @@ export default function ChatLayout() {
   };
 
   const handleBookAppointment = (clinic: any) => {
-    sendMessage(`I want to book an appointment at ${clinic.name}`, undefined, clinic);
+    setSelectedClinic(clinic);
+    setShowBookingModal(true);
   };
 
   const handleNewChat = () => {
@@ -351,6 +385,7 @@ export default function ChatLayout() {
     setCurrentBooking(null);
     setBookingConfirmed(false);
     setBookingId(null);
+    setShowBookingModal(false);
     setSpecialtyNeeded(null);
     if (isMobile) setIsSidebarOpen(false);
   };
@@ -388,6 +423,102 @@ export default function ChatLayout() {
     });
   };
 
+  const handleBookingComplete = async (booking: any) => {
+    setCurrentBooking(booking);
+    setBookingConfirmed(true);
+    setBookingId(booking?.id || null);
+    setShowBookingModal(false);
+
+    try {
+      const token = getAuthToken();
+      const response = await fetch(`${API_BASE_URL}/api/chat/events`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          session_id: currentSessionId,
+          type: "booking_completed",
+          booking: {
+            clinic_name: booking.clinic_name,
+            appointment_date: booking.appointment_date,
+            time_slot: booking.time_slot,
+          },
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setMessages((current) => [
+          ...current,
+          {
+            role: "assistant",
+            content: data.message,
+            metadata: data.metadata || (data.clinics ? { clinics: data.clinics } : undefined),
+          },
+        ]);
+        fetchSessions(userIdRef.current);
+        return;
+      }
+    } catch (err) {
+      console.error("Failed to post booking_completed event:", err);
+    }
+
+    // Fallback confirmation message if event API fails
+    setMessages((current) => [
+      ...current,
+      {
+        role: "assistant",
+        content: `✅ Your appointment with ${booking.clinic_name} has been booked successfully for ${booking.appointment_date} at ${booking.time_slot}. A confirmation email has been sent.`,
+      },
+    ]);
+  };
+
+  const handleBookingFailed = async (errorMessage: string) => {
+    setShowBookingModal(false);
+
+    try {
+      const token = getAuthToken();
+      const response = await fetch(`${API_BASE_URL}/api/chat/events`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          session_id: currentSessionId,
+          type: "booking_failed",
+          error: errorMessage,
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setMessages((current) => [
+          ...current,
+          {
+            role: "assistant",
+            content: data.message,
+            metadata: data.metadata,
+          },
+        ]);
+        return;
+      }
+    } catch (err) {
+      console.error("Failed to post booking_failed event:", err);
+    }
+
+    // Fallback failure message if event API fails
+    setMessages((current) => [
+      ...current,
+      {
+        role: "assistant",
+        content: `❌ Booking failed: ${errorMessage}`,
+      },
+    ]);
+  };
+
   // ── Render ───────────────────────────────────────────────────────────────
   return (
     <div className="h-full flex overflow-hidden" style={{ background: "var(--bg-primary)" }}>
@@ -398,6 +529,17 @@ export default function ChatLayout() {
           onSuccess={() => setShowAuthModal(false)}
           messageCount={messageCount}
           limit={ANON_MESSAGE_LIMIT}
+        />
+      )}
+
+      {showBookingModal && selectedClinic && (
+        <BookingModal
+          clinic={selectedClinic}
+          sessionId={currentSessionId}
+          specialty={specialtyNeeded}
+          onClose={() => setShowBookingModal(false)}
+          onBooked={handleBookingComplete}
+          onBookingFailed={handleBookingFailed}
         />
       )}
 
