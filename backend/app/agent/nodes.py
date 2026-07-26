@@ -58,8 +58,6 @@ def _log_planner_snapshot(
         "planner_decision": planner_decision_data,
         "medical_decision": medical_decision,
     }
-    logger.info("[planner_trace] %s", json.dumps(payload, default=str))
-
 
 def _clinic_selection_from_clinic(clinic: dict) -> ClinicSelection:
     return ClinicSelection(

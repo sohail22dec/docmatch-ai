@@ -50,6 +50,27 @@ export async function getCurrentUser(): Promise<User | null> {
 }
 
 // ─────────────────────────────────────────────
+// URL Helper
+// ─────────────────────────────────────────────
+
+/**
+ * Returns the base site URL for OAuth redirects.
+ * Prioritizes client origin, NEXT_PUBLIC_SITE_URL, NEXT_PUBLIC_VERCEL_URL, and localhost.
+ */
+export function getURL(): string {
+  if (typeof window !== "undefined" && window.location.origin) {
+    return `${window.location.origin}/`;
+  }
+  let url =
+    process.env.NEXT_PUBLIC_SITE_URL ??
+    process.env.NEXT_PUBLIC_VERCEL_URL ??
+    "http://localhost:3000/";
+  url = url.includes("http") ? url : `https://${url}`;
+  url = url.endsWith("/") ? url : `${url}/`;
+  return url;
+}
+
+// ─────────────────────────────────────────────
 // Google OAuth
 // ─────────────────────────────────────────────
 
@@ -57,7 +78,7 @@ export async function signInWithGoogle(): Promise<void> {
   const { error } = await supabase.auth.signInWithOAuth({
     provider: "google",
     options: {
-      redirectTo: `${window.location.origin}/`,
+      redirectTo: getURL(),
     },
   });
   if (error) throw new Error(error.message);

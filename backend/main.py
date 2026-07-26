@@ -13,11 +13,8 @@ load_dotenv()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("Building and caching LangGraph on startup...")
     app.state.graph = await build_graph()
-    print("LangGraph is ready!")
     yield
-    # Teardown (if necessary)
     pass
 
 
@@ -35,7 +32,10 @@ app.include_router(chat_router, prefix="/api", tags=["Chat"])
 # Allow Next.js frontend to communicate with this backend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "https://docmatch-ai.vercel.app",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

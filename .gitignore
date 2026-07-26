@@ -52,3 +52,9 @@ yarn-error.log*
 next-env.d.ts
 credentials.json
 token.json
+
+# LangGraph dev runtime & cache
+.langgraph_ops*
+.langgraph_api/
+*.pckl
+*.sqlite

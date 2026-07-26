@@ -1,7 +1,5 @@
 import json
 import logging
-import traceback
-from datetime import datetime
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Request, Depends
 from app.models.schemas import ChatRequest, ChatResponse
@@ -264,10 +262,7 @@ async def chat_endpoint(
     except HTTPException as he:
         raise he
     except Exception as e:
-        error_msg = f"Error: {str(e)}\n{traceback.format_exc()}"
-        print(f"[chat_endpoint] CRITICAL ERROR: {error_msg}")
-        with open("backend_error.log", "a") as f:
-            f.write(f"\n--- {datetime.now()} ---\n{error_msg}\n")
+        logger.exception("[chat_endpoint] CRITICAL ERROR")
         raise HTTPException(
             status_code=500,
             detail=f"Internal Server Error: {str(e)}",
