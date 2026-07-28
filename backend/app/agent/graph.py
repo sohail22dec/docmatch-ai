@@ -2,7 +2,6 @@ from langgraph.graph import StateGraph, START, END
 
 from app.agent.state import AgentState
 from app.agent.nodes import (
-    clinic_selection_node,
     planner_node,
     medical_node,
     search_node,
@@ -27,7 +26,6 @@ def _route_from_planner(state: AgentState) -> str:
 async def build_graph():
     workflow = StateGraph(AgentState)
 
-    workflow.add_node("clinic_selection_node", clinic_selection_node)
     workflow.add_node("planner_node", planner_node)
     workflow.add_node("medical_node", medical_node)
     workflow.add_node("search_node", search_node)
@@ -35,8 +33,7 @@ async def build_graph():
     workflow.add_node("response_node", response_node)
 
     # 1. Entry point
-    workflow.add_edge(START, "clinic_selection_node")
-    workflow.add_edge("clinic_selection_node", "planner_node")
+    workflow.add_edge(START, "planner_node")
 
     # 2. Planner conditional routing
     workflow.add_conditional_edges(

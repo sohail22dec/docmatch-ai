@@ -1,5 +1,3 @@
-import json
-import logging
 import re
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -19,7 +17,6 @@ from app.planner import (
 from app.medical import run as medical_run, MedicalStatus
 from app.medical.models import MedicalDecision
 from app.services import GoogleMapsService, Clinic
-from app.booking import BookingService, BookingCreateRequest
 
 from app.agent.state import AgentState
 
@@ -35,29 +32,7 @@ _llm = ChatGroq(
 
 _planner = Planner()
 _maps_service = GoogleMapsService()
-logger = logging.getLogger(__name__)
 
-
-def _log_planner_snapshot(
-    *,
-    node: str,
-    phase: str,
-    planner_state: PlannerState,
-    planner_decision: PlannerDecision | dict | None,
-    medical_decision: dict | None = None,
-) -> None:
-    if isinstance(planner_decision, PlannerDecision):
-        planner_decision_data = planner_decision.model_dump(mode="json")
-    else:
-        planner_decision_data = planner_decision
-
-    payload = {
-        "node": node,
-        "phase": phase,
-        "planner_state": planner_state.model_dump(mode="json"),
-        "planner_decision": planner_decision_data,
-        "medical_decision": medical_decision,
-    }
 
 def _clinic_selection_from_clinic(clinic: dict) -> ClinicSelection:
     return ClinicSelection(
@@ -128,44 +103,7 @@ def _resolve_clinic_selection(
     return None
 
 
-# ---------------------------------------------------------------------------
-# clinic_selection_node
-# ---------------------------------------------------------------------------
 
-
-async def clinic_selection_node(state: AgentState) -> dict:
-    current_ps = PlannerState.model_validate(state["planner_state"])
-    _log_planner_snapshot(
-        node="clinic_selection_node",
-        phase="before",
-        planner_state=current_ps,
-        planner_decision=state.get("planner_decision"),
-        medical_decision=state.get("medical_decision"),
-    )
-
-    if current_ps.clinic_selected:
-        updated_ps = current_ps
-    else:
-        clinics = state.get("previous_search_results") or state.get("search_results") or []
-        selected_clinic = _resolve_clinic_selection(
-            user_text=_latest_user_text(state),
-            clinics=clinics,
-            explicit_selection=state.get("selected_clinic_request"),
-        )
-        updated_ps = (
-            current_ps.model_copy(update={"selected_clinic": selected_clinic})
-            if selected_clinic
-            else current_ps
-        )
-
-    _log_planner_snapshot(
-        node="clinic_selection_node",
-        phase="after",
-        planner_state=updated_ps,
-        planner_decision=state.get("planner_decision"),
-        medical_decision=state.get("medical_decision"),
-    )
-    return {"planner_state": updated_ps.model_dump()}
 
 
 # ---------------------------------------------------------------------------
@@ -176,21 +114,7 @@ async def clinic_selection_node(state: AgentState) -> dict:
 async def planner_node(state: AgentState) -> dict:
     planner_state = PlannerState.model_validate(state["planner_state"])
     medical_decision = state.get("medical_decision")
-    _log_planner_snapshot(
-        node="planner_node",
-        phase="before_decide",
-        planner_state=planner_state,
-        planner_decision=state.get("planner_decision"),
-        medical_decision=medical_decision,
-    )
     decision = _planner.decide(planner_state, medical_decision=medical_decision)
-    _log_planner_snapshot(
-        node="planner_node",
-        phase="after_decide",
-        planner_state=planner_state,
-        planner_decision=decision,
-        medical_decision=medical_decision,
-    )
     return {"planner_decision": decision.model_dump()}
 
 
@@ -200,14 +124,6 @@ async def planner_node(state: AgentState) -> dict:
 
 
 async def medical_node(state: AgentState) -> dict:
-    _log_planner_snapshot(
-        node="medical_node",
-        phase="before",
-        planner_state=PlannerState.model_validate(state["planner_state"]),
-        planner_decision=state.get("planner_decision"),
-        medical_decision=state.get("medical_decision"),
-    )
-
     conversation = []
     for msg in state["messages"]:
         if isinstance(msg, HumanMessage):
@@ -240,14 +156,6 @@ async def medical_node(state: AgentState) -> dict:
     else:
         updated_ps = current_ps
 
-    _log_planner_snapshot(
-        node="medical_node",
-        phase="after",
-        planner_state=updated_ps,
-        planner_decision=state.get("planner_decision"),
-        medical_decision=decision.model_dump(mode="json"),
-    )
-
     return {
         "medical_decision": decision.model_dump(),
         "planner_state": updated_ps.model_dump(),
@@ -261,14 +169,6 @@ async def medical_node(state: AgentState) -> dict:
 
 async def search_node(state: AgentState) -> dict:
     current_ps = PlannerState.model_validate(state["planner_state"])
-    _log_planner_snapshot(
-        node="search_node",
-        phase="before",
-        planner_state=current_ps,
-        planner_decision=state.get("planner_decision"),
-        medical_decision=state.get("medical_decision"),
-    )
-
     specialty = current_ps.specialty or ""
     action = None
     clinics = []
@@ -295,15 +195,6 @@ async def search_node(state: AgentState) -> dict:
         clinics = await _maps_service.search_clinics(specialty=specialty, city=city_str)
         new_status = SearchStatus.HAS_RESULTS if clinics else SearchStatus.EMPTY
         updated_ps = current_ps.model_copy(update={"search_status": new_status})
-
-    _log_planner_snapshot(
-        node="search_node",
-        phase="after",
-        planner_state=updated_ps,
-        planner_decision=state.get("planner_decision"),
-        medical_decision=state.get("medical_decision"),
-    )
-
     return {
         "search_results": [c.model_dump() for c in clinics],
         "planner_state": updated_ps.model_dump(),
@@ -317,25 +208,7 @@ async def search_node(state: AgentState) -> dict:
 
 
 async def booking_node(state: AgentState) -> dict:
-    """
-    Starts the booking capability once the planner has a concrete clinic selection.
-    Actual appointment creation still requires patient/date/time details.
-    """
     planner_state = PlannerState.model_validate(state["planner_state"])
-    _log_planner_snapshot(
-        node="booking_node",
-        phase="before",
-        planner_state=planner_state,
-        planner_decision=state.get("planner_decision"),
-        medical_decision=state.get("medical_decision"),
-    )
-    _log_planner_snapshot(
-        node="booking_node",
-        phase="after",
-        planner_state=planner_state,
-        planner_decision=state.get("planner_decision"),
-        medical_decision=state.get("medical_decision"),
-    )
     selected_clinic = (
         planner_state.selected_clinic.model_dump(mode="json")
         if planner_state.selected_clinic

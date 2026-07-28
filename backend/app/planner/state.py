@@ -29,10 +29,6 @@ class ClinicSelection(BaseModel):
 
 
 class PlannerState(BaseModel):
-    """
-    Stores ONLY persistent domain facts about the conversation.
-    Derived planning decisions (missing_info, next capability) are NEVER stored here.
-    """
 
     specialty: Optional[str] = None
     location_type: LocationType = LocationType.UNKNOWN
