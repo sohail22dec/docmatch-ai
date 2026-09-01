@@ -16,7 +16,6 @@ import {
 } from "../../../lib/auth";
 import { supabase } from "../../../lib/supabase";
 
-// Dynamically import ChatInput with SSR disabled to prevent hydration mismatches
 const ChatInput = dynamic(() => import("./ChatInput"), {
   ssr: false,
   loading: () => (
